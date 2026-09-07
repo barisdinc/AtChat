@@ -34,6 +34,7 @@ jobs:
     steps:
       - name: Etiketi belirle
         id: tag
+        working-directory: ${{ github.workspace }}
         run: echo "tag=${{ inputs.tag || github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
 
       - uses: actions/checkout@v4
