@@ -96,10 +96,15 @@ dist plan                                      # yerelde ne üretileceğini gös
 
 ## GUI kullanımı
 
-- **İstasyonlar**: soldan çağrı işareti + mod (QPSK/BPSK) girip "＋ Ekle".
-  Seçili istasyonda rol rozeti, roster, ilerleme çubuklu transferler,
-  sohbet (hedef seçici + Enter), "Kopar"/"Yeniden bağlan", filtreli günlük.
-  "Dosya/görüntü gönder…" yerel dosya seçici açar.
+- **İstasyonlar**: soldan çağrı işareti + mod (QPSK/BPSK) girip "＋ Ekle"
+  (✕ ile kaldır). Seçili istasyonda rol rozeti, roster, ilerleme çubuklu
+  transferler, sohbet (hedef seçici + Enter), "Kopar"/"Yeniden bağlan",
+  filtreli günlük. "Dosya/görüntü gönder…" yerel dosya seçici açar.
+- **NET** (toplu kontrol): sekme değiştirmeden herhangi bir istasyondan
+  konuş / dosya gönder; **"Tümü konuşsun"** ve **"Tümü göndersin…"** ile
+  bağlı her istasyon aynı anda; **Otomatik sohbet** (rastgele istasyon →
+  ALL, ayarlı aralık) ile waterfall'ı canlı izle. Birleşik NET sohbet
+  akışı + tüm istasyonların aktif transferleri tek listede.
 - **Kanal**: AWGN dB + multipath gecikme/kazanç kaydırıcıları (anında
   uygulanır), ön ayarlar (Temiz / 13 dB–ARQ / Multipath sınırı), canlı
   meşgul durumu, olay günlüğü.

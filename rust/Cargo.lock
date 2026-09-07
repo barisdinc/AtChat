@@ -397,6 +397,7 @@ dependencies = [
  "modem",
  "netproto",
  "protocol",
+ "rand 0.8.8",
  "rfd",
  "tokio",
  "tracing",

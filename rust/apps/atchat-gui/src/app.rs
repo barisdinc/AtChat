@@ -15,6 +15,7 @@ const WF_H: usize = 256;
 enum Tab {
     Channel,
     Stations,
+    Net,
     Monitor,
 }
 
@@ -48,6 +49,13 @@ pub struct AtchatApp {
     new_mode: netproto::Mode,
     chat_input: String,
     chat_dst: String,
+
+    // --- NET tab ui ---
+    net_from: String,
+    net_dst: String,
+    net_msg: String,
+    net_file_dst: String,
+    auto_secs: f32,
 
     // --- channel tab ui ---
     snr_on: bool,
@@ -84,6 +92,11 @@ impl AtchatApp {
             new_mode: netproto::Mode::Qpsk,
             chat_input: String::new(),
             chat_dst: "ALL".into(),
+            net_from: String::new(),
+            net_dst: "ALL".into(),
+            net_msg: String::new(),
+            net_file_dst: "ALL".into(),
+            auto_secs: 4.0,
             snr_on: false,
             snr_db: 15.0,
             mp_delay: 0.0,
@@ -146,6 +159,7 @@ impl eframe::App for AtchatApp {
                 ui.separator();
                 ui.selectable_value(&mut self.tab, Tab::Channel, "Kanal");
                 ui.selectable_value(&mut self.tab, Tab::Stations, "İstasyonlar");
+                ui.selectable_value(&mut self.tab, Tab::Net, "NET");
                 ui.selectable_value(&mut self.tab, Tab::Monitor, "Monitör");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(ch) = &snap.channel {
@@ -166,6 +180,7 @@ impl eframe::App for AtchatApp {
         egui::CentralPanel::default().show(ctx, |ui| match self.tab {
             Tab::Channel => self.ui_channel(ui, &snap),
             Tab::Stations => self.ui_stations(ui, &snap),
+            Tab::Net => self.ui_net(ui, &snap),
             Tab::Monitor => self.ui_monitor(ui, ctx, &snap),
         });
 
@@ -477,6 +492,209 @@ impl AtchatApp {
                 .show(&mut cols[1], |ui| {
                     for l in &sv.log {
                         ui.monospace(l);
+                    }
+                });
+        });
+    }
+}
+
+// ------------------------------------------------------------------ //
+// NET sekmesi — tüm istasyonları tek yerden yönet
+// ------------------------------------------------------------------ //
+impl AtchatApp {
+    fn ui_net(&mut self, ui: &mut egui::Ui, snap: &EngineSnapshot) {
+        let calls: Vec<String> = snap
+            .stations
+            .iter()
+            .map(|s| s.snap.callsign.clone())
+            .collect();
+        if calls.is_empty() {
+            ui.centered_and_justified(|ui| {
+                ui.label("Önce İstasyonlar sekmesinden birkaç istasyon ekle.")
+            });
+            return;
+        }
+        if !calls.contains(&self.net_from) {
+            self.net_from = calls[0].clone();
+        }
+        let dst_opts: Vec<String> = std::iter::once("ALL".to_string())
+            .chain(calls.clone())
+            .collect();
+
+        ui.heading("NET — toplu kontrol");
+        ui.add_space(4.0);
+
+        // --- toplu sohbet ---
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Sohbet").strong());
+            ui.horizontal(|ui| {
+                egui::ComboBox::from_id_salt("net_from")
+                    .selected_text(&self.net_from)
+                    .show_ui(ui, |ui| {
+                        for c in &calls {
+                            ui.selectable_value(&mut self.net_from, c.clone(), c);
+                        }
+                    });
+                ui.label("→");
+                egui::ComboBox::from_id_salt("net_dst")
+                    .selected_text(&self.net_dst)
+                    .show_ui(ui, |ui| {
+                        for c in &dst_opts {
+                            ui.selectable_value(&mut self.net_dst, c.clone(), c);
+                        }
+                    });
+                let resp = ui.add(
+                    egui::TextEdit::singleline(&mut self.net_msg)
+                        .hint_text("mesaj")
+                        .desired_width(260.0),
+                );
+                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.button("Gönder").clicked() || enter) && !self.net_msg.trim().is_empty() {
+                    self.engine.send(EngineCmd::Chat {
+                        callsign: self.net_from.clone(),
+                        dst: self.net_dst.clone(),
+                        text: self.net_msg.trim().to_string(),
+                    });
+                    self.net_msg.clear();
+                }
+                if ui
+                    .button("Tümü konuşsun")
+                    .on_hover_text("Bağlı her istasyon bu mesajı gönderir")
+                    .clicked()
+                    && !self.net_msg.trim().is_empty()
+                {
+                    self.engine.send(EngineCmd::ChatAll {
+                        dst: self.net_dst.clone(),
+                        text: self.net_msg.trim().to_string(),
+                    });
+                    self.net_msg.clear();
+                }
+            });
+
+            ui.horizontal(|ui| {
+                let mut auto = snap.auto_chat_on;
+                if ui.checkbox(&mut auto, "Otomatik sohbet").changed() {
+                    self.engine.send(EngineCmd::SetAutoChat {
+                        enabled: auto,
+                        interval_ms: (self.auto_secs * 1000.0) as u64,
+                    });
+                }
+                if ui
+                    .add(egui::Slider::new(&mut self.auto_secs, 1.0..=15.0).suffix(" sn"))
+                    .changed()
+                    && snap.auto_chat_on
+                {
+                    self.engine.send(EngineCmd::SetAutoChat {
+                        enabled: true,
+                        interval_ms: (self.auto_secs * 1000.0) as u64,
+                    });
+                }
+                ui.weak("(rastgele istasyon → ALL; waterfall'ı canlı görmek için)");
+            });
+        });
+
+        // --- toplu dosya ---
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Dosya / görüntü").strong());
+            ui.horizontal(|ui| {
+                ui.label("hedef:");
+                egui::ComboBox::from_id_salt("net_file_dst")
+                    .selected_text(&self.net_file_dst)
+                    .show_ui(ui, |ui| {
+                        for c in &dst_opts {
+                            ui.selectable_value(&mut self.net_file_dst, c.clone(), c);
+                        }
+                    });
+                if ui.button(format!("{} gönder…", self.net_from)).clicked() {
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        self.engine.send(EngineCmd::SendFile {
+                            callsign: self.net_from.clone(),
+                            path,
+                            dst: self.net_file_dst.clone(),
+                        });
+                    }
+                }
+                if ui
+                    .button("Tümü göndersin…")
+                    .on_hover_text("Bağlı her istasyon seçilen dosyayı gönderir")
+                    .clicked()
+                {
+                    if let Some(path) = rfd::FileDialog::new().pick_file() {
+                        self.engine.send(EngineCmd::SendFileAll {
+                            path,
+                            dst: self.net_file_dst.clone(),
+                        });
+                    }
+                }
+            });
+        });
+
+        ui.add_space(4.0);
+        ui.columns(2, |cols| {
+            cols[0].label(egui::RichText::new("NET sohbet akışı").strong());
+            egui::ScrollArea::vertical()
+                .id_salt("net_chat")
+                .stick_to_bottom(true)
+                .max_height(360.0)
+                .show(&mut cols[0], |ui| {
+                    for line in &snap.net_chat {
+                        let arrow = if line.dst == "ALL" {
+                            String::new()
+                        } else {
+                            format!(" → {}", line.dst)
+                        };
+                        ui.monospace(format!("{}{}: {}", line.from, arrow, line.text));
+                    }
+                });
+
+            cols[1].label(egui::RichText::new("Tüm aktif transferler").strong());
+            egui::ScrollArea::vertical()
+                .id_salt("net_xfers")
+                .max_height(360.0)
+                .show(&mut cols[1], |ui| {
+                    let mut any = false;
+                    for sv in &snap.stations {
+                        for t in &sv.snap.transfers_out {
+                            any = true;
+                            let frac = if t.total > 0 {
+                                t.have as f32 / t.total as f32
+                            } else {
+                                0.0
+                            };
+                            ui.add(egui::ProgressBar::new(frac).text(format!(
+                                "{} ↑ {} → {} {}/{}{}",
+                                sv.snap.callsign,
+                                t.filename,
+                                t.peer,
+                                t.have,
+                                t.total,
+                                if t.arq_round > 0 {
+                                    format!(" ARQ{}", t.arq_round)
+                                } else {
+                                    String::new()
+                                }
+                            )));
+                        }
+                        for t in &sv.snap.transfers_in {
+                            any = true;
+                            let frac = if t.total > 0 {
+                                t.have as f32 / t.total as f32
+                            } else {
+                                0.0
+                            };
+                            ui.add(egui::ProgressBar::new(frac).text(format!(
+                                "{} ↓ {} ← {} {}/{}{}",
+                                sv.snap.callsign,
+                                t.filename,
+                                t.peer,
+                                t.have,
+                                t.total,
+                                if t.complete { "  ✓" } else { "" }
+                            )));
+                        }
+                    }
+                    if !any {
+                        ui.weak("(aktif transfer yok)");
                     }
                 });
         });

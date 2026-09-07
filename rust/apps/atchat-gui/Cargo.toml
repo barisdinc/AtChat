@@ -33,6 +33,7 @@ channel.workspace = true
 protocol.workspace = true
 dsp-viz.workspace = true
 anyhow.workspace = true
+rand.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
