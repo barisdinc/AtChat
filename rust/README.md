@@ -20,7 +20,7 @@ için (Rust ↔ Python aynı JSON telini konuşur).
 | 3 | `protocol` (`Station`) + entegrasyon testleri | ✅ 6 senaryo geçti (election, chat, bulk bit-birebir, ARQ, drop/reconnect, backup takeover) |
 | 4 | `dsp-viz` (scope / spectrum / waterfall) | ✅ 11 birim testi (Hann+Welch+peak-hold, min/max zarf, colormap LUT, RGB waterfall) |
 | 5 | `atchat-gui` (eframe, 3 sekme, cpal ses) | ✅ derleniyor + çalışıyor; motor↔GUI glue testi geçiyor |
-| 6 | Cila: ön ayarlar, paketleme, doküman | 🔶 kanal ön ayarları var; paketleme/CI kaldı |
+| 6 | Cila: ön ayarlar, CI, paketleme, doküman | ✅ kanal ön ayarları · matris CI · cargo-dist sürüm iş akışı · kök doküman |
 
 ## Önkoşul: Rust toolchain
 
@@ -76,6 +76,18 @@ cargo test -p dsp-viz -p atchat-gui                     # DSP + motor↔GUI glue
 # GUI'yi çalıştır
 cargo run -p atchat-gui                                 # tek pencere: Kanal | İstasyonlar | Monitör
 cargo build --release                                   # tek binary (hedef platform)
+```
+
+## Sürüm paketleri (cargo-dist)
+
+`dist-workspace.toml` (kök) + `.github/workflows/release.yml`. `v*` biçiminde
+bir git etiketi push'lanınca **5 hedef** için (`atchat-gui` + `atchat-channeld`)
+arşiv + sha256 üretilip GitHub Release'e yüklenir:
+macOS arm64/x64, Linux arm64/x64, Windows x64.
+
+```
+git tag v0.1.0 && git push origin v0.1.0     # ilk sürümü tetikler
+dist plan                                     # yerelde ne üretileceğini gösterir
 ```
 
 ## GUI kullanımı
