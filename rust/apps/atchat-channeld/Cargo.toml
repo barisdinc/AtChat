@@ -5,7 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
 description = "Headless TCP kanal sunucusu — channel_server.py ile tel-uyumlu"
+
+[package.metadata.wix]
+upgrade-guid = "710095F5-4C6D-4832-BF57-3F38991132BA"
+path-guid = "3E6F98D0-8D49-4464-9241-408D7005C1FD"
+license = false
+eula = false
+
+# Ubuntu/Debian .deb (cargo-deb) — bkz. .github/workflows/deb.yml
+[package.metadata.deb]
+maintainer = "barisdinc <barisdinc@gmail.com>"
+section = "hamradio"
+priority = "optional"
+depends = "$auto"
+extended-description = "channel_server.py ile tel-uyumlu headless TCP kanal sunucusu; Python client.py / monitor.py doğrudan bağlanabilir."
 
 [dependencies]
 channel.workspace = true

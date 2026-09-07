@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=AtCHAT
+GenericName=Telsiz NET
+Comment=OFDM tabanlı amatör telsiz NET modu — Kanal / İstasyonlar / Monitör
+Exec=atchat-gui
+Terminal=false
+Categories=HamRadio;Network;Utility;
+Keywords=ham;radio;sdr;ofdm;modem;net;

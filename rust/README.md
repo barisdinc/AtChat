@@ -78,16 +78,20 @@ cargo run -p atchat-gui                                 # tek pencere: Kanal | �
 cargo build --release                                   # tek binary (hedef platform)
 ```
 
-## Sürüm paketleri (cargo-dist)
+## Sürüm paketleri
 
-`dist-workspace.toml` (kök) + `.github/workflows/release.yml`. `v*` biçiminde
-bir git etiketi push'lanınca **5 hedef** için (`atchat-gui` + `atchat-channeld`)
-arşiv + sha256 üretilip GitHub Release'e yüklenir:
-macOS arm64/x64, Linux arm64/x64, Windows x64.
+`v*` biçiminde bir git etiketi push'lanınca iki iş akışı çalışır ve
+çıktıları aynı GitHub Release'e yüklenir (`atchat-gui` + `atchat-channeld`):
+
+| Kaynak | Çıktı |
+|---|---|
+| `release.yml` (cargo-dist, `dist-workspace.toml`) | macOS arm64/x64 · Linux arm64/x64 · Windows x64 arşivleri (`.tar.xz` / `.zip`) + **Windows `.msi`** + sha256 + `source.tar.gz` |
+| `deb.yml` (cargo-deb) | Ubuntu/Debian **`.deb`** (x86_64); `atchat-gui` masaüstü girişiyle |
 
 ```
-git tag v0.1.0 && git push origin v0.1.0     # ilk sürümü tetikler
-dist plan                                     # yerelde ne üretileceğini gösterir
+# rust/Cargo.toml'da version'ı bump et, sonra:
+git tag v0.1.0 && git push origin v0.1.0      # sürümü tetikler
+dist plan                                      # yerelde ne üretileceğini gösterir
 ```
 
 ## GUI kullanımı

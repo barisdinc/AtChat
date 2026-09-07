@@ -16,6 +16,7 @@ edition = "2021"
 rust-version = "1.75"
 license = "MIT"
 repository = "https://github.com/barisdinc/AtChat"
+authors = ["barisdinc <barisdinc@gmail.com>"]
 
 [workspace.dependencies]
 # Ortak (crate'ler arası paylaşılan) bağımlılıklar. modem.py / client.py /

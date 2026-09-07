@@ -5,7 +5,26 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
+authors.workspace = true
 description = "AtCHAT tek pencere GUI (egui/eframe): Kanal | İstasyonlar | Monitör"
+
+[package.metadata.wix]
+upgrade-guid = "CFD26B3D-F1A8-47C7-AA6C-519734C08093"
+path-guid = "AB82D47F-8733-4ADB-9E88-9CFDD3F85C76"
+license = false
+eula = false
+
+# Ubuntu/Debian .deb (cargo-deb) — bkz. .github/workflows/deb.yml
+[package.metadata.deb]
+maintainer = "barisdinc <barisdinc@gmail.com>"
+section = "hamradio"
+priority = "optional"
+depends = "$auto"
+extended-description = "OFDM tabanlı amatör telsiz NET modu için tek pencere GUI (egui): kanal fiziği, çok istasyonlu sohbet/transfer ve scope/spectrum/waterfall monitör."
+assets = [
+    ["target/release/atchat-gui", "usr/bin/", "755"],
+    ["assets/atchat-gui.desktop", "usr/share/applications/", "644"],
+]
 
 [dependencies]
 netproto.workspace = true
