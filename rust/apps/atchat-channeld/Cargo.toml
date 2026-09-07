@@ -1,0 +1,16 @@
+[package]
+name = "atchat-channeld"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Headless TCP kanal sunucusu — channel_server.py ile tel-uyumlu"
+
+[dependencies]
+channel.workspace = true
+netproto.workspace = true
+anyhow.workspace = true
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util", "signal"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true

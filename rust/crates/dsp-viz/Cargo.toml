@@ -1,0 +1,11 @@
+[package]
+name = "dsp-viz"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Monitör görselleştirme DSP'si: scope zarfı, spektrum analizörü (Hann+Welch+peak), waterfall + colormap. GUI çatısından bağımsız."
+
+[dependencies]
+num-complex.workspace = true
+rustfft.workspace = true

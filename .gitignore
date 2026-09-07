@@ -1,0 +1,16 @@
+# Rust
+rust/target/
+rust/target/rust_vectors/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Protokol çıktıları (test/çalıştırma sırasında oluşur)
+/received/
+rust/received/
+
+# OS
+.DS_Store
