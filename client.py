@@ -85,6 +85,10 @@ class Client:
         self.modem = Modem()           # the real OFDM modulator/demodulator
         self.stdin_q = queue.Queue()
 
+        # Adaptive control window (see _control_window / _send_blocks):
+        self._chat_waiting = 0         # local chat/msg commands queued to go out
+        self._foreign_ctrl_ts = 0.0    # last time another station sent a control frame
+
         os.makedirs("received", exist_ok=True)
 
     # ------------------------------------------------------------------ #
@@ -210,6 +214,10 @@ class Client:
 
         if not is_self:
             self._touch_roster(src)
+            # A competing control frame -> widen our bulk control window so the
+            # next one from that station almost certainly finds an open slot.
+            if ftype in ("CHAT", "JOIN_REQUEST", "BULK_STATUS"):
+                self._foreign_ctrl_ts = time.time()
 
         if ftype == "BEACON":
             await self.on_beacon(frame)
@@ -302,13 +310,13 @@ class Client:
             self._age_roster()
             now = time.time()
 
-            if self.role != "MASTER" and (now - self.last_beacon_time) > BEACON_TIMEOUT:
-                # Only the "first to arrive" (no master ever seen) or the assigned backup takes over.
-                if self.role == "BACKUP" or self.master is None:
-                    self.log("beacon timed out -> taking the master role")
-                    self.role = "MASTER"
-                    self.last_beacon_time = now
-                    await self.send_beacon()
+            if self.role != "MASTER" and self._should_take_over(now):
+                pos = 0 if self.master is None else self._succession_pos()
+                self.log(f"beacon timed out -> taking the master role (succession #{pos})")
+                self.role = "MASTER"
+                self.master = self.callsign
+                self.last_beacon_time = now
+                await self.send_beacon()
 
     async def beacon_loop(self):
         while True:
@@ -320,6 +328,36 @@ class Client:
         active = [c for c, i in self.roster.items()
                   if i["status"] == "active" and c != self.callsign]
         return sorted(active)[0] if active else None
+
+    # --- Multi-level failover ---------------------------------------------
+    # The old logic only let ONE assigned backup take over; if that station was
+    # also gone, the net had no master. Instead every station derives the SAME
+    # ordered "succession line" from its local roster and takes over according
+    # to its position in it - so the chain continues past a single backup with
+    # no extra signalling (the roster is already in every BEACON).
+    def _succession_line(self):
+        """Sorted {self + active peers} minus the presumed-dead master."""
+        cands = {self.callsign}
+        for c, i in self.roster.items():
+            if c != self.master and i["status"] == "active":
+                cands.add(c)
+        return sorted(cands)
+
+    def _succession_pos(self):
+        line = self._succession_line()
+        return line.index(self.callsign) if self.callsign in line else len(line)
+
+    def _should_take_over(self, now):
+        silent = now - self.last_beacon_time
+        if silent <= BEACON_TIMEOUT:
+            return False
+        if self.master is None:
+            return True  # bootstrap: the first station on an empty channel
+        # One extra BEACON_INTERVAL of grace per position in the line, so the
+        # highest-priority survivor keys up first. Dead peers ahead of us age
+        # out to "lost", drop off the line and we move up. A genuine
+        # simultaneous claim is still resolved by the tie-break in on_beacon.
+        return silent > BEACON_TIMEOUT + self._succession_pos() * BEACON_INTERVAL
 
     async def send_beacon(self):
         self.backup = self._pick_backup()
@@ -368,6 +406,7 @@ class Client:
                                        "transfer_id": transfer_id}):
             return
 
+        sent_last_round = n_blocks
         for round_no in range(6):
             missing = await self._wait_for_status(transfer_id, timeout=6.0)
             if not self.connected:
@@ -379,7 +418,9 @@ class Client:
             if not missing:
                 self.log(f"[{transfer_id}] complete (round {round_no + 1})")
                 return
-            self.log(f"[{transfer_id}] resending {len(missing)} blocks (round {round_no + 1})")
+            self._adapt_mode(t, len(missing), sent_last_round)
+            sent_last_round = len(missing)
+            self.log(f"[{transfer_id}] resending {len(missing)} blocks (round {round_no + 1}, {t.mode})")
             if not await self._send_blocks(t, missing):
                 return
             await self.send_frame({"type": "BULK_END", "src": self.callsign, "dst": dst,
@@ -401,8 +442,42 @@ class Client:
     # certain in practice - the cost is a ~25-30% drop in overall throughput,
     # but that was exactly our original design goal: not raw speed, but the
     # guarantee of "being able to pass a message in between".
+    #
+    # ADAPTIVE (next-step #9): the values above are the QUIET baseline - enough
+    # to keep beacons alive during an otherwise idle transfer. When the channel
+    # is actually contended (we have local chat queued, or another station just
+    # sent a CHAT/JOIN/BULK_STATUS) we switch to the BUSY values: a window after
+    # every single block, held a touch longer. Throughput drops further while
+    # the contention lasts, then it relaxes back on its own.
     CONTROL_WINDOW_EVERY = 3
-    CONTROL_WINDOW_PAUSE = 1.2  # s
+    CONTROL_WINDOW_PAUSE = 1.2       # s
+    CONTROL_WINDOW_EVERY_BUSY = 1
+    CONTROL_WINDOW_PAUSE_BUSY = 1.5  # s
+    CONTROL_CONTENDED_FOR = 6.0      # s to stay in BUSY after the last foreign control frame
+
+    # Adaptive modulation (next-step #4): there is no pilot-based per-carrier
+    # bit loading yet (that needs the channel estimator, #5), but the ARQ loop
+    # already gives us a real link-quality signal - the fraction of a round's
+    # blocks that did not make it. If a QPSK round loses more than
+    # ADAPT_DOWNSHIFT_FRAC of what we sent, the link will not sustain QPSK
+    # without FEC (the "COFDM cliff" from the design notes), so we drop to BPSK
+    # for the rest of the transfer. Downshift only - we never oscillate back up.
+    ADAPT_DOWNSHIFT_FRAC = 0.15
+
+    def _adapt_mode(self, t: TransferOut, n_missing, n_sent_last_round):
+        if t.mode == "QPSK" and n_sent_last_round > 0 \
+                and n_missing / n_sent_last_round > self.ADAPT_DOWNSHIFT_FRAC:
+            t.mode = "BPSK"
+            self.log(f"[{t.transfer_id}] link adaptation: {n_missing}/{n_sent_last_round} "
+                     f"blocks lost at QPSK -> switching to BPSK")
+
+    def _control_window(self):
+        """(every, pause) for the control window - widened while contended."""
+        contended = (self._chat_waiting > 0 or
+                     (time.time() - self._foreign_ctrl_ts) < self.CONTROL_CONTENDED_FOR)
+        if contended:
+            return self.CONTROL_WINDOW_EVERY_BUSY, self.CONTROL_WINDOW_PAUSE_BUSY
+        return self.CONTROL_WINDOW_EVERY, self.CONTROL_WINDOW_PAUSE
 
     async def _send_blocks(self, t: TransferOut, seqs):
         for i, seq in enumerate(seqs):
@@ -416,8 +491,9 @@ class Client:
             }, mode=t.mode)
             if not ok:
                 return False
-            if (i + 1) % self.CONTROL_WINDOW_EVERY == 0:
-                await asyncio.sleep(self.CONTROL_WINDOW_PAUSE)
+            every, pause = self._control_window()
+            if (i + 1) % every == 0:
+                await asyncio.sleep(pause)
         return True
 
     async def _wait_for_status(self, transfer_id, timeout):
@@ -549,9 +625,17 @@ class Client:
         cmd = parts[0]
         try:
             if cmd == "/chat" and len(parts) > 1:
-                await self.chat(" ".join(parts[1:]))
+                self._chat_waiting += 1
+                try:
+                    await self.chat(" ".join(parts[1:]))
+                finally:
+                    self._chat_waiting -= 1
             elif cmd == "/msg" and len(parts) > 2:
-                await self.chat(parts[2], dst=parts[1].upper())
+                self._chat_waiting += 1
+                try:
+                    await self.chat(parts[2], dst=parts[1].upper())
+                finally:
+                    self._chat_waiting -= 1
             elif cmd == "/sendimage" and len(parts) > 1:
                 dst = parts[2].upper() if len(parts) > 2 else "ALL"
                 await self.send_bulk(parts[1], dst)

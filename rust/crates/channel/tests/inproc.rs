@@ -78,7 +78,10 @@ async fn monitor_tap_streams_burst_then_silence() {
             chunks += 1;
         }
     }
-    assert!(chunks >= 10, "the monitor pacer is not flowing ({chunks} chunks)");
+    assert!(
+        chunks >= 10,
+        "the monitor pacer is not flowing ({chunks} chunks)"
+    );
     assert!(peak > 500, "the monitor tap stayed silent (peak={peak})");
 }
 

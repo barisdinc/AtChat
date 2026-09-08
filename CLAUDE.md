@@ -119,12 +119,23 @@ BEACON), `CHAT` (broadcast/unicast, via the DST field), `BULK_META`,
 **Master election/failover:** The first station to connect declares itself
 master if it hears no beacon for `BEACON_TIMEOUT` (24 s, `netproto.py`). The
 master broadcasts a beacon every `BEACON_INTERVAL` (8 s) (with the roster +
-the assigned backup master). The backup master takes over automatically if no
-beacon arrives from the main master for 24 s. If two stations become master
-at the same time, the alphabetically smaller callsign wins (a simple
-tie-break). **Known limitation:** it currently chains only as far as ONE
-assigned backup master — if that one also drops, there is NO extra logic for
-the next station in the roster to take over (see the next steps).
+the assigned backup master). If two stations become master at the same time,
+the alphabetically smaller callsign wins (a simple tie-break).
+
+**Multi-level failover (next-step #1, DONE):** `master_watchdog` no longer
+special-cases a single backup. On beacon timeout every non-master station
+derives the SAME ordered "succession line" from its local roster — the sorted
+set `{self} ∪ {active peers}` minus the presumed-dead master — and takes over
+once the beacon has been silent for `BEACON_TIMEOUT + pos * BEACON_INTERVAL`
+(`pos` = its index in that line). Higher-priority survivors key up first;
+dead peers ahead age out to "lost", drop off the line and everyone below
+moves up, so the chain continues arbitrarily deep. A genuine simultaneous
+claim is still resolved by the alphabetical tie-break in `on_beacon`.
+Bootstrap (no master ever seen) still takes over immediately. Helpers:
+`_succession_line` / `_succession_pos` / `_should_take_over` in `client.py`;
+`succession_pos` in the Rust `station.rs`. Tested: Rust
+`failover_chains_past_a_single_backup`, and a real end-to-end run against
+`channel_server.py` + 3 `client.py` (master→backup→third station).
 
 **Roster:** Each station keeps `{callsign: {last_seen, status}}` locally.
 Marked "lost" after `LOST_TIMEOUT` (30 s), removed entirely after
@@ -134,6 +145,16 @@ Marked "lost" after `LOST_TIMEOUT` (30 s), removed entirely after
 blocks, each protected by CRC32. After `BULK_END` the receiver sends the list
 of missing blocks (`BULK_STATUS`), and the sender resends only those blocks —
 the whole transfer does not start over.
+
+**Adaptive modulation (next-step #4, DONE):** there is still no pilot-based
+per-carrier bit loading (that needs the channel estimator, #5), but the ARQ
+loop is used as a real link-quality signal: if a QPSK round loses more than
+`ADAPT_DOWNSHIFT_FRAC` (0.15) of the blocks it sent, `send_bulk` drops that
+transfer to BPSK for the rest (`_adapt_mode` in `client.py`; inline in
+`send_bulk` in the Rust port). Downshift only — it never oscillates back up.
+The receiver needs no change: every frame's header carries the BPSK/QPSK flag,
+so a mixed-mode transfer decodes fine. Tested: Rust
+`qpsk_round_with_heavy_loss_downshifts_to_bpsk`.
 
 **Sudden drop/reconnect:** `/drop` closes the TCP connection but the
 process/state stays alive in RAM. `/reconnect` reconnects, and if an active
@@ -154,6 +175,17 @@ which leads to wrong master-election conflicts (we saw this for real, see
 Bug #3 below). I am not saying do not lower/raise these parameters, but do not
 change them without knowing why they are at these values — the maths is
 explained in a comment (the block above `_send_blocks` in `client.py`).
+
+**Adaptive control window (next-step #9, DONE):** the values above are now the
+QUIET baseline (enough to keep beacons alive during an otherwise idle
+transfer). When the channel is actually contended — local chat queued
+(`_chat_waiting`), or another station sent a CHAT/JOIN/BULK_STATUS within
+`CONTROL_CONTENDED_FOR` (6 s, tracked as `_foreign_ctrl_ts`) — `_send_blocks`
+switches to the BUSY values (`*_BUSY`: a window after every single block, held
+1.5 s) and relaxes back on its own. `_control_window()` picks the pair each
+block. Same logic in the Rust port (`control_window()` + `pending_chat` /
+`foreign_ctrl`, config fields `control_window_*_busy` /
+`control_contended_for`).
 
 ## Real bugs found and fixed (important, do not fall into them again)
 
@@ -212,29 +244,42 @@ All really run and verified (not made up):
   block request + completing only the missing part (without starting over) —
   tested in both the master and normal-station roles
 - ✅ Master drop + the backup master taking over automatically
+- ✅ Multi-level failover: master → backup → THIRD station (the chain no longer
+  stops at one backup) — Rust `failover_chains_past_a_single_backup` + a real
+  `channel_server.py` + 3×`client.py` end-to-end run
+- ✅ Adaptive modulation: a QPSK round with heavy block loss makes the sender
+  fall back to BPSK mid-transfer, still bit-exact — Rust
+  `qpsk_round_with_heavy_loss_downshifts_to_bpsk`
 - ✅ A 3-station scenario (master + 2 stations, roster synchronisation)
 - ✅ Chat AND beacons being delivered reliably while a real 45-block (9815B)
   file transfer is in progress (after the control-window fix)
 - ✅ The `netproto.py` name-clash scenario (deliberately simulated)
-- ⚠️ The multipath test has only been done at the `modem.py` level
-  (standalone); it has NOT yet been tested END TO END in the full
-  client/server integration with the `--multipath-*` parameters (the
-  server-side code is there and should be logically correct, but was not
-  verified with a real transfer)
-- ❌ The full 4-station NET scenario (a group image + a private file + a
-  sudden drop — the scenario from the original discussion) has NOT yet been
-  tested end to end over real audio (only tested with 2-3 stations)
+- ✅ Multipath end to end (integration, not just `modem.py`): a real transfer
+  through a MILD echo (2 ms, ~-18 dB, inside the 8 ms guard) lands bit-exact —
+  Rust `transfer_survives_multipath_within_guard`. NOTE: a stronger echo pushes
+  sustained block loss into the known BULK_END-loss ARQ stall, so it is not
+  asserted; BPSK + a channel estimator (#5) are the real fix. Still not tested
+  with the Python `--multipath-*` server flags specifically.
+- ✅ The full 4-station NET scenario (group ALL image + private file + a station
+  dropping/reconnecting mid-run) — Rust `four_station_net_group_and_private`.
+  The two transfers run one after the other, not literally at once: two big
+  transfers on a 2.7 kHz half-duplex channel starve each other (a channel
+  property). Not yet run with 4 real Python `client.py` processes.
 - ❌ No real sound-card/microphone loopback test was done (still carried over
   TCP as base64)
 
 ## Known limitations / next steps (not in priority order)
 
-1. **The failover chain is limited to a single backup** — logic for the next
-   active station in the roster to take over needs to be added.
-2. **Multipath not verified end to end** — see above.
-3. **The full 4-station scenario was not tested with real audio.**
-4. **No adaptive bit loading** — `mode` (BPSK/QPSK) is currently selected
-   manually/fixed; there is no automatic selection by SNR.
+1. ~~**The failover chain is limited to a single backup.**~~ DONE — succession
+   line, see "Multi-level failover" above.
+2. ~~**Multipath not verified end to end.**~~ DONE for a mild echo (Rust
+   `transfer_survives_multipath_within_guard`); a strong echo still stalls on
+   the BULK_END-loss issue, and the Python `--multipath-*` path is untested.
+3. ~~**The full 4-station scenario was not tested.**~~ DONE in Rust
+   (`four_station_net_group_and_private`); not yet with 4 real Python processes.
+4. ~~**No adaptive bit loading.**~~ PARTLY DONE — ARQ-loss-driven QPSK→BPSK
+   downshift (see "Adaptive modulation" above). Real per-carrier bit loading by
+   SNR still needs the channel estimator (#5).
 5. **No channel estimation/equaliser** — the root cause of the multipath
    limitation; adding pilot-based channel estimation is a natural next step.
 6. **No LDPC/RS FEC** — integrity is CRC32 only, error correction is left to
@@ -244,9 +289,8 @@ All really run and verified (not made up):
 8. **No real SDR/RF integration** — see the "Roadmap to SDR" section in the
    README; `channel_server.py` is expected to change, `client.py`/`modem.py`
    to stay largely the same.
-9. **The control window (CONTROL_WINDOW_EVERY/PAUSE) is fixed** — it could be
-   made adaptive to traffic (e.g. increasing the window frequency when there
-   is pending chat).
+9. ~~**The control window (CONTROL_WINDOW_EVERY/PAUSE) is fixed.**~~ DONE —
+   QUIET/BUSY pair, see "Adaptive control window" above.
 
 ## How to run (summary, details in README.md)
 
@@ -304,10 +348,13 @@ apps/atchat-gui       eframe: Channel | Stations | Monitor tabs + cpal audio.
   CLAUDE.md (`tests/awgn_sweep.rs`, `#[ignore]`).
 - `channel`: 8 tests + **the Python `client.py`/`monitor.py` connecting to the
   Rust `atchat-channeld` with bit-exact chat/ARQ/file** (verified by hand).
-- `protocol`: 6 scenarios — election, chat, bulk bit-exact, ARQ (lost block),
-  drop/reconnect resume, backup takeover. There is also a `#[ignore]`-d
-  full-size test.
-- `dsp-viz`: 11 unit tests. `atchat-gui`: an engine↔GUI glue test.
+- `protocol`: 10 scenarios — election, chat, bulk bit-exact, ARQ (lost block),
+  drop/reconnect resume, backup takeover, **multi-level failover chain
+  (`failover_chains_past_a_single_backup`)**, **adaptive QPSK→BPSK downshift
+  (`qpsk_round_with_heavy_loss_downshifts_to_bpsk`)**, **mild multipath end to
+  end (`transfer_survives_multipath_within_guard`)**, **full 4-station NET
+  (`four_station_net_group_and_private`)**. Plus a `#[ignore]`-d full-size test.
+- `dsp-viz`: 11 unit tests. `atchat-gui`: 4 engine↔GUI glue tests.
 - `cargo clippy --workspace` clean, `cargo fmt` applied.
 
 ### Bugs found/preserved during the port
@@ -330,6 +377,15 @@ apps/atchat-gui       eframe: Channel | Stations | Monitor tabs + cpal audio.
   is READY).
 - The Rust section of the root CLAUDE.md/README.md (THIS section).
 - Waterfall frequency zoom (0–2.76 kHz) — ADDED.
+
+### GUI fixes
+
+- **SEND button dead in the chat rows** (Stations tab + NET tab): the
+  single-line text field had `desired_width = INFINITY`, so in the horizontal
+  row it consumed all the width and pushed the "Send"/"All talk" buttons past
+  the clip rect — visible but unclickable. Fix (`app.rs`): the buttons are
+  placed first in a `right_to_left` sub-layout so their space is reserved, and
+  the field fills what's left; Enter in the field still sends.
 
 ## Language
 

@@ -506,17 +506,27 @@ impl AtchatApp {
                             ui.selectable_value(&mut self.chat_dst, c.clone(), c);
                         }
                     });
-                let resp = ui.text_edit_singleline(&mut self.chat_input);
-                let send = ui.button("Send").clicked()
-                    || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if send && !self.chat_input.trim().is_empty() {
-                    self.engine.send(EngineCmd::Chat {
-                        callsign: call.clone(),
-                        dst: self.chat_dst.clone(),
-                        text: self.chat_input.trim().to_string(),
-                    });
-                    self.chat_input.clear();
-                }
+                // Reserve the Send button on the right FIRST so it can never be
+                // pushed off the row by the text field; the field then fills the
+                // rest of the space to its left.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let mut send = ui.button("Send").clicked();
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.chat_input)
+                            .hint_text("message")
+                            .desired_width(f32::INFINITY),
+                    );
+                    send |= resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    if send && !self.chat_input.trim().is_empty() {
+                        self.engine.send(EngineCmd::Chat {
+                            callsign: call.clone(),
+                            dst: self.chat_dst.clone(),
+                            text: self.chat_input.trim().to_string(),
+                        });
+                        self.chat_input.clear();
+                        resp.request_focus();
+                    }
+                });
             });
             cols[1].add_space(6.0);
             cols[1].label(egui::RichText::new("Log").strong());
@@ -578,32 +588,38 @@ impl AtchatApp {
                             ui.selectable_value(&mut self.net_dst, c.clone(), c);
                         }
                     });
-                let resp = ui.add(
-                    egui::TextEdit::singleline(&mut self.net_msg)
-                        .hint_text("message")
-                        .desired_width(260.0),
-                );
-                let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.button("Send").clicked() || enter) && !self.net_msg.trim().is_empty() {
-                    self.engine.send(EngineCmd::Chat {
-                        callsign: self.net_from.clone(),
-                        dst: self.net_dst.clone(),
-                        text: self.net_msg.trim().to_string(),
-                    });
-                    self.net_msg.clear();
-                }
-                if ui
-                    .button("All talk")
-                    .on_hover_text("Every connected station sends this message")
-                    .clicked()
-                    && !self.net_msg.trim().is_empty()
-                {
-                    self.engine.send(EngineCmd::ChatAll {
-                        dst: self.net_dst.clone(),
-                        text: self.net_msg.trim().to_string(),
-                    });
-                    self.net_msg.clear();
-                }
+                // Reserve the buttons on the right FIRST (right-to-left) so they
+                // stay visible however narrow the window is; the text field fills
+                // whatever space is left to their left.
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let all_talk = ui
+                        .button("All talk")
+                        .on_hover_text("Every connected station sends this message")
+                        .clicked();
+                    let mut send = ui.button("Send").clicked();
+                    let resp = ui.add(
+                        egui::TextEdit::singleline(&mut self.net_msg)
+                            .hint_text("message")
+                            .desired_width(f32::INFINITY),
+                    );
+                    send |= resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let has_text = !self.net_msg.trim().is_empty();
+                    if send && has_text {
+                        self.engine.send(EngineCmd::Chat {
+                            callsign: self.net_from.clone(),
+                            dst: self.net_dst.clone(),
+                            text: self.net_msg.trim().to_string(),
+                        });
+                        self.net_msg.clear();
+                        resp.request_focus();
+                    } else if all_talk && has_text {
+                        self.engine.send(EngineCmd::ChatAll {
+                            dst: self.net_dst.clone(),
+                            text: self.net_msg.trim().to_string(),
+                        });
+                        self.net_msg.clear();
+                    }
+                });
             });
 
             ui.horizontal(|ui| {
@@ -744,7 +760,9 @@ impl AtchatApp {
         ui.group(|ui| {
             ui.label(egui::RichText::new("Images").strong());
             if n == 0 {
-                ui.weak("(no image received over the air — one appears here once a .png/.jpg is sent)");
+                ui.weak(
+                    "(no image received over the air — one appears here once a .png/.jpg is sent)",
+                );
                 self.img_tex = None;
                 self.img_key = None;
                 self.prev_img_count = 0;

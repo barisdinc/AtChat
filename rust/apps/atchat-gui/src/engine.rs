@@ -837,9 +837,7 @@ async fn engine_monitor(s: Shared, repaint: Box<dyn Fn() + Send>, addr: String) 
                                     })
                             });
                             match summary {
-                                Some(t) => {
-                                    push_cap(&md, format!("{t} | {dur:.2}s | decoded"), 120)
-                                }
+                                Some(t) => push_cap(&md, format!("{t} | {dur:.2}s | decoded"), 120),
                                 None => push_cap(&md, format!("{dur:.2}s | undecoded"), 120),
                             }
                             tokio::spawn(paced_feed(

@@ -66,5 +66,9 @@ fn awgn_performance_curve() {
         "QPSK@10dB should have hit the cliff: {:?}",
         get(10.0)
     );
-    assert!(get(10.0).2 >= 12, "BPSK@10dB should have held up: {:?}", get(10.0));
+    assert!(
+        get(10.0).2 >= 12,
+        "BPSK@10dB should have held up: {:?}",
+        get(10.0)
+    );
 }

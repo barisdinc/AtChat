@@ -135,7 +135,10 @@ mod tests {
         // The newest row (y=0) is the brightest (level = -50 -> ~0.5 -> ~128).
         let top = rgb[0];
         let second = rgb[8 * 3];
-        assert!(top > second, "the newest row should be on top and the brightest");
+        assert!(
+            top > second,
+            "the newest row should be on top and the brightest"
+        );
     }
 
     #[test]

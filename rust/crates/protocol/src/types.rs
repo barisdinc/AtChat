@@ -121,9 +121,15 @@ pub struct StationConfig {
     pub beacon_timeout: Duration,
     pub lost_timeout: Duration,
     pub remove_timeout: Duration,
-    /// `_send_blocks`: a control window every N blocks (CLAUDE.md bug #3).
+    /// `send_blocks`: the QUIET control window — every N blocks (CLAUDE.md bug #3).
     pub control_window_every: usize,
     pub control_window_pause: Duration,
+    /// The BUSY control window, used while the channel is contended (local chat
+    /// queued, or a peer just sent a control frame) — next-step #9.
+    pub control_window_every_busy: usize,
+    pub control_window_pause_busy: Duration,
+    /// How long to stay on the BUSY window after the last foreign control frame.
+    pub control_contended_for: Duration,
     /// The directory received files are written to (`client.py`: "received").
     pub received_dir: PathBuf,
 }
@@ -137,6 +143,9 @@ impl Default for StationConfig {
             remove_timeout: Duration::from_secs_f64(netproto::REMOVE_TIMEOUT),
             control_window_every: 3,
             control_window_pause: Duration::from_millis(1200),
+            control_window_every_busy: 1,
+            control_window_pause_busy: Duration::from_millis(1500),
+            control_contended_for: Duration::from_secs(6),
             received_dir: PathBuf::from("received"),
         }
     }

@@ -15,8 +15,8 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
 use std::sync::atomic::Ordering::Relaxed;
+use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::sync::{Arc, Mutex};
 
 use rand::Rng;
@@ -65,6 +65,11 @@ pub struct StationShared<C: Connector> {
 
     state: Mutex<StationState>,
     events: broadcast::Sender<StationEvent>,
+
+    /// Adaptive control window (next-step #9): local chat queued to go out, and
+    /// the last time a peer sent a control frame. Both widen the bulk window.
+    pending_chat: AtomicUsize,
+    foreign_ctrl: Mutex<Option<Instant>>,
 
     /// `receive_loop` takes its next `rx` from here (drop/reconnect).
     rx_slot: tokio::sync::Mutex<Option<C::Rx>>,
@@ -201,6 +206,13 @@ impl<C: Connector> StationShared<C> {
         if !is_self {
             if let Some(s) = &src {
                 self.touch_roster(s);
+            }
+            // A competing control frame -> widen our bulk control window (#9).
+            if matches!(
+                &frame,
+                Frame::Chat { .. } | Frame::JoinRequest { .. } | Frame::BulkStatus { .. }
+            ) {
+                *self.foreign_ctrl.lock().unwrap() = Some(Instant::now());
             }
         }
 
@@ -418,14 +430,28 @@ impl<C: Connector> StationShared<C> {
             let now = Instant::now();
             let take_over = {
                 let st = self.state.lock().unwrap();
-                st.role != Role::Master
-                    && now.duration_since(st.last_beacon_time) > self.cfg.beacon_timeout
-                    && (st.role == Role::Backup || st.master.is_none())
+                let silent = now.duration_since(st.last_beacon_time);
+                if st.role == Role::Master || silent <= self.cfg.beacon_timeout {
+                    false
+                } else if st.master.is_none() {
+                    true // bootstrap: the first station on an empty channel
+                } else {
+                    // Multi-level failover: one extra beacon_interval of grace
+                    // per position in the succession line, so the highest-
+                    // priority survivor keys up first. Dead peers ahead of us
+                    // age out to `lost`, drop off the line and we move up - the
+                    // chain continues past a single backup. on_beacon's
+                    // tie-break still resolves a genuine simultaneous claim.
+                    silent
+                        > self.cfg.beacon_timeout
+                            + self.cfg.beacon_interval * self.succession_pos(&st)
+                }
             };
             if take_over {
                 {
                     let mut st = self.state.lock().unwrap();
                     st.role = Role::Master;
+                    st.master = Some(self.callsign.clone());
                     st.last_beacon_time = now;
                 }
                 self.log("beacon timed out -> taking the master role");
@@ -453,6 +479,24 @@ impl<C: Connector> StationShared<C> {
             .min()
     }
 
+    /// This station's index in the deterministic succession line: the sorted
+    /// set `{self} ∪ {active peers}` with the presumed-dead master removed.
+    /// Every station derives the same list from its own roster, so failover
+    /// proceeds in order with no extra signalling.
+    fn succession_pos(&self, st: &StationState) -> u32 {
+        let mut line: Vec<&str> = vec![self.callsign.as_str()];
+        for (c, e) in &st.roster {
+            if e.status == RosterStatus::Active && Some(c.as_str()) != st.master.as_deref() {
+                line.push(c.as_str());
+            }
+        }
+        line.sort_unstable();
+        line.dedup();
+        line.iter()
+            .position(|c| *c == self.callsign)
+            .unwrap_or(line.len()) as u32
+    }
+
     async fn send_beacon(&self) {
         let backup = self.pick_backup();
         let roster_list: Vec<String> = {
@@ -478,20 +522,33 @@ impl<C: Connector> StationShared<C> {
     // Chat
     // ------------------------------------------------------------------ //
     async fn chat(&self, text: &str, dst: &str) -> bool {
-        self.send_frame(
-            Frame::Chat {
-                src: self.callsign.clone(),
-                dst: dst.to_string(),
-                text: text.to_string(),
-            },
-            Mode::Bpsk,
-        )
-        .await
+        // Mark chat as pending so a bulk transfer in flight (this station or,
+        // via events, another) widens its control window until we get out (#9).
+        self.pending_chat.fetch_add(1, Relaxed);
+        let ok = self
+            .send_frame(
+                Frame::Chat {
+                    src: self.callsign.clone(),
+                    dst: dst.to_string(),
+                    text: text.to_string(),
+                },
+                Mode::Bpsk,
+            )
+            .await;
+        self.pending_chat.fetch_sub(1, Relaxed);
+        ok
     }
 
     // ------------------------------------------------------------------ //
     // Bulk transfer - send
     // ------------------------------------------------------------------ //
+    /// Adaptive modulation (next-step #4): no pilot-based per-carrier bit
+    /// loading yet (needs the channel estimator, #5), but the ARQ round already
+    /// tells us how much of what we sent got through. If a QPSK round loses more
+    /// than this fraction the link won't sustain QPSK without FEC (the "COFDM
+    /// cliff"), so drop to BPSK for the rest of the transfer. Downshift only.
+    const ADAPT_DOWNSHIFT_FRAC: f64 = 0.15;
+
     async fn send_bulk(self: Arc<Self>, path: PathBuf, dst: String) {
         let data = match std::fs::read(&path) {
             Ok(d) => d,
@@ -501,6 +558,7 @@ impl<C: Connector> StationShared<C> {
             }
         };
         let n_blocks = data.len().div_ceil(BLOCK_SIZE).max(1);
+        let mut sent_last_round = n_blocks;
         let mut blocks = BTreeMap::new();
         for i in 0..n_blocks {
             let s = i * BLOCK_SIZE;
@@ -598,10 +656,41 @@ impl<C: Connector> StationShared<C> {
                 self.mark_out_done(&transfer_id);
                 return;
             }
+            // Link adaptation: too many losses at QPSK -> drop to BPSK for the rest.
+            if sent_last_round > 0
+                && missing.len() as f64 / sent_last_round as f64 > Self::ADAPT_DOWNSHIFT_FRAC
+            {
+                if let Some(t) = self
+                    .state
+                    .lock()
+                    .unwrap()
+                    .transfers_out
+                    .get_mut(&transfer_id)
+                {
+                    if t.mode == Mode::Qpsk {
+                        t.mode = Mode::Bpsk;
+                        self.log(format!(
+                            "[{transfer_id}] link adaptation: {}/{} blocks lost at QPSK -> switching to BPSK",
+                            missing.len(),
+                            sent_last_round
+                        ));
+                    }
+                }
+            }
+            sent_last_round = missing.len();
+            let cur_mode = self
+                .state
+                .lock()
+                .unwrap()
+                .transfers_out
+                .get(&transfer_id)
+                .map(|t| t.mode)
+                .unwrap_or(mode);
             self.log(format!(
-                "[{transfer_id}] resending {} blocks (round {})",
+                "[{transfer_id}] resending {} blocks (round {}, {})",
                 missing.len(),
-                round_no + 1
+                round_no + 1,
+                cur_mode.as_str()
             ));
             if let Some(t) = self
                 .state
@@ -628,6 +717,31 @@ impl<C: Connector> StationShared<C> {
         self.log(format!(
             "[{transfer_id}] reached the round limit; it will resume automatically if the receiver comes back"
         ));
+    }
+
+    /// `(every, pause)` for the bulk control window. The QUIET baseline keeps
+    /// beacons alive during an idle transfer; while the channel is contended
+    /// (local chat queued, or a peer sent a control frame within
+    /// `control_contended_for`) it switches to the wider BUSY values, then
+    /// relaxes back on its own. Mirrors `client.py::_control_window`.
+    fn control_window(&self) -> (usize, Duration) {
+        let contended = self.pending_chat.load(Relaxed) > 0
+            || self
+                .foreign_ctrl
+                .lock()
+                .unwrap()
+                .is_some_and(|t| t.elapsed() < self.cfg.control_contended_for);
+        if contended {
+            (
+                self.cfg.control_window_every_busy.max(1),
+                self.cfg.control_window_pause_busy,
+            )
+        } else {
+            (
+                self.cfg.control_window_every.max(1),
+                self.cfg.control_window_pause,
+            )
+        }
     }
 
     async fn send_blocks(&self, transfer_id: &str, seqs: &[usize]) -> bool {
@@ -681,11 +795,12 @@ impl<C: Connector> StationShared<C> {
             }
             let _ = self.events.send(StationEvent::StateChanged);
 
-            // The control window (CLAUDE.md bug #3): a control_window_pause
-            // pause every control_window_every blocks — so chat AND BEACONs
-            // can get through. The rationale for the values is in CLAUDE.md.
-            if (i + 1) % self.cfg.control_window_every == 0 {
-                tokio::time::sleep(self.cfg.control_window_pause).await;
+            // The control window (CLAUDE.md bug #3): a pause every N blocks so
+            // chat AND BEACONs can get through. QUIET vs BUSY values per
+            // next-step #9 — see `control_window`.
+            let (every, pause) = self.control_window();
+            if (i + 1) % every == 0 {
+                tokio::time::sleep(pause).await;
             }
         }
         true
@@ -1090,6 +1205,8 @@ impl<C: Connector> Station<C> {
                 transfers_out: BTreeMap::new(),
             }),
             events,
+            pending_chat: AtomicUsize::new(0),
+            foreign_ctrl: Mutex::new(None),
             rx_slot: tokio::sync::Mutex::new(Some(rx)),
             reconnect_notify: Notify::new(),
         });
