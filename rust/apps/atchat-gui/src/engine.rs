@@ -98,7 +98,7 @@ pub struct ChatLine {
     pub own: bool,
 }
 
-/// Havadan gelip resim olarak çözülebilen bir dosya.
+/// Havadan gelip (ya da bu istasyonca gönderilip) resim olarak çözülen dosya.
 #[derive(Clone)]
 pub struct RecvImage {
     pub from: String,
@@ -107,6 +107,58 @@ pub struct RecvImage {
     pub width: usize,
     pub height: usize,
     pub rgba: Arc<Vec<u8>>, // width*height*4
+    /// true -> bu istasyon gönderdi, false -> havadan geldi.
+    pub own: bool,
+}
+
+/// Bir resmi NET listesine ekle; aynı `(from, filename, w, h)` son satırlarda
+/// varsa (çok yerel alıcı / gönderen+alan aynı process) tekrar etme.
+fn push_image(images: &Mutex<Vec<RecvImage>>, img: RecvImage) {
+    let mut list = images.lock().unwrap();
+    let dup = list.iter().rev().take(8).any(|i| {
+        i.from == img.from
+            && i.filename == img.filename
+            && i.width == img.width
+            && i.height == img.height
+    });
+    if !dup {
+        list.push(img);
+        while list.len() > 50 {
+            list.remove(0);
+        }
+    }
+}
+
+/// `path`'i oku, resimse `push_image` ile ekle (arka planda).
+fn try_add_image(
+    images: Arc<Mutex<Vec<RecvImage>>>,
+    from: String,
+    filename: String,
+    path: String,
+    own: bool,
+) {
+    tokio::spawn(async move {
+        let Ok(bytes) = tokio::fs::read(&path).await else {
+            return;
+        };
+        let Ok(img) = image::load_from_memory(&bytes) else {
+            return; // resim değil -> sessizce yok say
+        };
+        let rgba = img.to_rgba8();
+        let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+        push_image(
+            &images,
+            RecvImage {
+                from,
+                filename,
+                when: now_hms(),
+                width: w,
+                height: h,
+                rgba: Arc::new(rgba.into_raw()),
+                own,
+            },
+        );
+    });
 }
 
 /// NET sekmesinin paylaşımlı durumu (sohbet + resimler).
@@ -123,6 +175,13 @@ impl NetShared {
             images: Arc::new(Mutex::new(Vec::new())),
         }
     }
+}
+
+fn file_name_of(p: &std::path::Path) -> String {
+    p.file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("dosya")
+        .to_string()
 }
 
 fn now_hms() -> String {
@@ -363,29 +422,7 @@ async fn add_station<C: Connector>(
                             peer,
                             ..
                         }) => {
-                            let im = Arc::clone(&im2);
-                            tokio::spawn(async move {
-                                let Ok(bytes) = tokio::fs::read(&path).await else {
-                                    return;
-                                };
-                                let Ok(img) = image::load_from_memory(&bytes) else {
-                                    return; // resim değil -> sessizce yok say
-                                };
-                                let rgba = img.to_rgba8();
-                                let (w, h) = (rgba.width() as usize, rgba.height() as usize);
-                                let mut list = im.lock().unwrap();
-                                list.push(RecvImage {
-                                    from: peer,
-                                    filename,
-                                    when: now_hms(),
-                                    width: w,
-                                    height: h,
-                                    rgba: Arc::new(rgba.into_raw()),
-                                });
-                                while list.len() > 50 {
-                                    list.remove(0);
-                                }
-                            });
+                            try_add_image(Arc::clone(&im2), peer, filename, path, false);
                         }
                         Ok(_) => {}
                         Err(broadcast::error::RecvError::Lagged(_)) => {}
@@ -461,15 +498,34 @@ async fn handle_station_cmd<C, F>(
             path,
             dst,
         } => {
-            if let Some(sl) = slots.get(&callsign.to_uppercase()) {
-                sl.station.send_file(path, &dst);
+            let c = callsign.to_uppercase();
+            if let Some(sl) = slots.get(&c) {
+                sl.station.send_file(path.clone(), &dst);
+                try_add_image(
+                    Arc::clone(&net.images),
+                    c,
+                    file_name_of(&path),
+                    path.to_string_lossy().into_owned(),
+                    true,
+                );
             }
         }
         EngineCmd::SendFileAll { path, dst } => {
-            for sl in slots.values() {
+            let mut first_sender: Option<String> = None;
+            for (c, sl) in slots.iter() {
                 if sl.station.is_connected() {
                     sl.station.send_file(path.clone(), &dst);
+                    first_sender.get_or_insert_with(|| c.clone());
                 }
+            }
+            if let Some(c) = first_sender {
+                try_add_image(
+                    Arc::clone(&net.images),
+                    c,
+                    file_name_of(&path),
+                    path.to_string_lossy().into_owned(),
+                    true,
+                );
             }
         }
         EngineCmd::Drop { callsign } => {
@@ -928,13 +984,20 @@ mod tests {
             dst: "TA2DEF".into(),
         });
 
+        // Gönderen tarafında hemen görünür (own = true).
         assert!(
-            wait_until(&h, 45, |s| s
-                .images
-                .iter()
-                .any(|i| i.from == "TA1ABC" && i.width == 8 && i.height == 6)),
-            "gelen PNG snapshot.images'e düşmeliydi"
+            wait_until(&h, 8, |s| s.images.iter().any(|i| i.from == "TA1ABC"
+                && i.own
+                && i.width == 8
+                && i.height == 6)),
+            "gönderen kendi resmini NET'te görmeliydi"
         );
+        // Transfer da tamamlanır (alıcı zaten dedup'a takılır ama akış çalışır).
+        assert!(wait_until(&h, 45, |s| s.stations.iter().any(|v| v
+            .snap
+            .transfers_in
+            .iter()
+            .any(|t| t.complete))));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

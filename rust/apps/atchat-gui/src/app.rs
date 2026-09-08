@@ -774,6 +774,12 @@ impl AtchatApp {
                     self.img_idx += 1;
                 }
                 ui.separator();
+                let (tag, col) = if img.own {
+                    ("↑ gönderilen", Color32::from_rgb(140, 180, 240))
+                } else {
+                    ("↓ gelen", Color32::from_rgb(140, 210, 150))
+                };
+                ui.colored_label(col, tag);
                 ui.label(
                     egui::RichText::new(format!(
                         "{}  ·  {}  ·  {} UTC  ·  {}×{}",
