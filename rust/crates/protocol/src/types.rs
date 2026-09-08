@@ -104,6 +104,8 @@ pub enum StationEvent {
         id: String,
         dir: TransferDir,
         filename: String,
+        /// Karşı istasyon (gelen için kaynak, giden için hedef).
+        peer: String,
         have: usize,
         total: usize,
         done: bool,

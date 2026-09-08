@@ -856,7 +856,7 @@ impl<C: Connector> StationShared<C> {
     }
 
     fn save_transfer(&self, transfer_id: &str) {
-        let (data, filename) = {
+        let (data, filename, src) = {
             let mut st = self.state.lock().unwrap();
             let Some(t) = st.transfers_in.get_mut(transfer_id) else {
                 return;
@@ -868,7 +868,7 @@ impl<C: Connector> StationShared<C> {
                     buf.extend_from_slice(b);
                 }
             }
-            (buf, t.filename.clone())
+            (buf, t.filename.clone(), t.src.clone())
         };
         let _ = std::fs::create_dir_all(&self.cfg.received_dir);
         let out_path = self
@@ -888,6 +888,7 @@ impl<C: Connector> StationShared<C> {
             id: transfer_id.to_string(),
             dir: TransferDir::In,
             filename,
+            peer: src,
             have: 0,
             total: 0,
             done: true,

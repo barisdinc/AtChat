@@ -75,6 +75,10 @@ pub struct AtchatApp {
     net_msg: String,
     net_file_dst: String,
     auto_secs: f32,
+    img_idx: usize,
+    img_tex: Option<egui::TextureHandle>,
+    img_key: Option<(usize, usize, usize)>,
+    prev_img_count: usize,
 
     // --- channel tab ui ---
     snr_on: bool,
@@ -119,6 +123,10 @@ impl AtchatApp {
             net_msg: String::new(),
             net_file_dst: "ALL".into(),
             auto_secs: 4.0,
+            img_idx: 0,
+            img_tex: None,
+            img_key: None,
+            prev_img_count: 0,
             snr_on: false,
             snr_db: 15.0,
             mp_delay: 0.0,
@@ -656,6 +664,8 @@ impl AtchatApp {
             });
         });
 
+        self.ui_net_images(ui, snap);
+
         ui.add_space(4.0);
         ui.columns(2, |cols| {
             cols[0].label(egui::RichText::new("NET sohbet akışı").strong());
@@ -724,6 +734,80 @@ impl AtchatApp {
                         ui.weak("(aktif transfer yok)");
                     }
                 });
+        });
+    }
+
+    /// Havadan gelen resimler — bilgi satırı + ◀ ▶ ile geçiş.
+    fn ui_net_images(&mut self, ui: &mut egui::Ui, snap: &EngineSnapshot) {
+        let n = snap.images.len();
+        ui.add_space(6.0);
+        ui.group(|ui| {
+            ui.label(egui::RichText::new("Resimler").strong());
+            if n == 0 {
+                ui.weak("(havadan resim gelmedi — bir .png/.jpg gönderilince burada görünür)");
+                self.img_tex = None;
+                self.img_key = None;
+                self.prev_img_count = 0;
+                return;
+            }
+
+            // Yeni resim geldiyse ve sonunu izliyorsam otomatik ona geç.
+            if n > self.prev_img_count && self.img_idx + 1 >= self.prev_img_count.max(1) {
+                self.img_idx = n - 1;
+            }
+            self.prev_img_count = n;
+            self.img_idx = self.img_idx.min(n - 1);
+            let img = &snap.images[self.img_idx];
+
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(self.img_idx > 0, egui::Button::new("◀"))
+                    .clicked()
+                {
+                    self.img_idx -= 1;
+                }
+                ui.label(format!("{}/{}", self.img_idx + 1, n));
+                if ui
+                    .add_enabled(self.img_idx + 1 < n, egui::Button::new("▶"))
+                    .clicked()
+                {
+                    self.img_idx += 1;
+                }
+                ui.separator();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{}  ·  {}  ·  {} UTC  ·  {}×{}",
+                        img.from, img.filename, img.when, img.width, img.height
+                    ))
+                    .strong(),
+                );
+            });
+
+            let key = (self.img_idx, n, std::sync::Arc::as_ptr(&img.rgba) as usize);
+            if self.img_key != Some(key) {
+                let ci =
+                    egui::ColorImage::from_rgba_unmultiplied([img.width, img.height], &img.rgba);
+                match &mut self.img_tex {
+                    Some(t) => t.set(ci, egui::TextureOptions::LINEAR),
+                    None => {
+                        self.img_tex = Some(ui.ctx().load_texture(
+                            "net_img",
+                            ci,
+                            egui::TextureOptions::LINEAR,
+                        ))
+                    }
+                }
+                self.img_key = Some(key);
+            }
+
+            if let Some(t) = &self.img_tex {
+                let maxw = ui.available_width().clamp(64.0, 720.0);
+                let maxh = 380.0_f32;
+                let (iw, ih) = (img.width.max(1) as f32, img.height.max(1) as f32);
+                let scale = (maxw / iw).min(maxh / ih).min(1.0);
+                let size = egui::vec2(iw * scale, ih * scale);
+                ui.image(egui::load::SizedTexture::new(t.id(), size));
+            }
         });
     }
 }

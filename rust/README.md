@@ -128,7 +128,10 @@ dist plan                                      # yerelde ne üretileceğini gös
   konuş / dosya gönder; **"Tümü konuşsun"** ve **"Tümü göndersin…"** ile
   bağlı her istasyon aynı anda; **Otomatik sohbet** (rastgele istasyon →
   ALL, ayarlı aralık) ile waterfall'ı canlı izle. Birleşik NET sohbet
-  akışı + tüm istasyonların aktif transferleri tek listede.
+  akışı (gelen + giden) + tüm istasyonların aktif transferleri tek listede.
+  **Resimler:** havadan gelen dosya bir resimse (PNG/JPG/GIF/BMP/WebP)
+  gösterilir — kim, hangi dosya, ne zaman bilgisiyle; ◀ ▶ ile birden çok
+  resim arasında geçiş.
 - **Kanal**: AWGN dB + multipath gecikme/kazanç kaydırıcıları (anında
   uygulanır), ön ayarlar (Temiz / 13 dB–ARQ / Multipath sınırı), canlı
   meşgul durumu, olay günlüğü.

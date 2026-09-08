@@ -98,6 +98,46 @@ pub struct ChatLine {
     pub own: bool,
 }
 
+/// Havadan gelip resim olarak çözülebilen bir dosya.
+#[derive(Clone)]
+pub struct RecvImage {
+    pub from: String,
+    pub filename: String,
+    pub when: String, // HH:MM:SS (UTC)
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Arc<Vec<u8>>, // width*height*4
+}
+
+/// NET sekmesinin paylaşımlı durumu (sohbet + resimler).
+#[derive(Clone)]
+struct NetShared {
+    chat: Arc<Mutex<VecDeque<ChatLine>>>,
+    images: Arc<Mutex<Vec<RecvImage>>>,
+}
+
+impl NetShared {
+    fn new() -> Self {
+        Self {
+            chat: Arc::new(Mutex::new(VecDeque::new())),
+            images: Arc::new(Mutex::new(Vec::new())),
+        }
+    }
+}
+
+fn now_hms() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    format!(
+        "{:02}:{:02}:{:02}",
+        (secs / 3600) % 24,
+        (secs / 60) % 60,
+        secs % 60
+    )
+}
+
 #[derive(Clone)]
 pub struct StationView {
     pub snap: StationSnapshot,
@@ -113,6 +153,8 @@ pub struct EngineSnapshot {
     pub stations: Vec<StationView>,
     /// Tüm istasyonların gönderdiği sohbet, kronolojik ve birleşik (NET sekmesi).
     pub net_chat: Vec<ChatLine>,
+    /// Havadan gelen ve resim olarak çözülen dosyalar (NET sekmesi).
+    pub images: Vec<RecvImage>,
     pub auto_chat_on: bool,
     /// Bu motorun bağlı olduğu adres (client/monitör modları).
     pub link_addr: Option<String>,
@@ -276,7 +318,7 @@ async fn add_station<C: Connector>(
     callsign: &str,
     mode: netproto::Mode,
     connector: C,
-    net_chat: &Arc<Mutex<VecDeque<ChatLine>>>,
+    net: &NetShared,
 ) {
     let c = callsign.trim().to_uppercase();
     if c.is_empty() || slots.contains_key(&c) {
@@ -287,7 +329,12 @@ async fn add_station<C: Connector>(
             let log = Arc::new(Mutex::new(VecDeque::new()));
             let chat = Arc::new(Mutex::new(VecDeque::new()));
             let mut ev = station.subscribe();
-            let (l2, c2, nc2) = (Arc::clone(&log), Arc::clone(&chat), Arc::clone(net_chat));
+            let (l2, c2, nc2, im2) = (
+                Arc::clone(&log),
+                Arc::clone(&chat),
+                Arc::clone(&net.chat),
+                Arc::clone(&net.images),
+            );
             let drain = tokio::spawn(async move {
                 loop {
                     match ev.recv().await {
@@ -307,6 +354,38 @@ async fn add_station<C: Connector>(
                             };
                             push_cap(&c2, line.clone(), 200);
                             push_recv_chat(&nc2, line);
+                        }
+                        Ok(StationEvent::Transfer {
+                            dir: protocol::TransferDir::In,
+                            done: true,
+                            saved_path: Some(path),
+                            filename,
+                            peer,
+                            ..
+                        }) => {
+                            let im = Arc::clone(&im2);
+                            tokio::spawn(async move {
+                                let Ok(bytes) = tokio::fs::read(&path).await else {
+                                    return;
+                                };
+                                let Ok(img) = image::load_from_memory(&bytes) else {
+                                    return; // resim değil -> sessizce yok say
+                                };
+                                let rgba = img.to_rgba8();
+                                let (w, h) = (rgba.width() as usize, rgba.height() as usize);
+                                let mut list = im.lock().unwrap();
+                                list.push(RecvImage {
+                                    from: peer,
+                                    filename,
+                                    when: now_hms(),
+                                    width: w,
+                                    height: h,
+                                    rgba: Arc::new(rgba.into_raw()),
+                                });
+                                while list.len() > 50 {
+                                    list.remove(0);
+                                }
+                            });
                         }
                         Ok(_) => {}
                         Err(broadcast::error::RecvError::Lagged(_)) => {}
@@ -344,17 +423,18 @@ async fn handle_station_cmd<C, F>(
     cmd: EngineCmd,
     slots: &mut BTreeMap<String, StationSlot<C>>,
     make_conn: &F,
-    net_chat: &Arc<Mutex<VecDeque<ChatLine>>>,
+    net: &NetShared,
     auto_chat: &mut Option<JoinHandle<()>>,
     cmd_tx: &UnboundedSender<EngineCmd>,
 ) where
     C: Connector,
     F: Fn(&str) -> C,
 {
+    let net_chat = &net.chat;
     match cmd {
         EngineCmd::AddStation { callsign, mode } => {
             let conn = make_conn(&callsign);
-            add_station(slots, &callsign, mode, conn, net_chat).await;
+            add_station(slots, &callsign, mode, conn, net).await;
         }
         EngineCmd::RemoveStation { callsign } => {
             slots.remove(&callsign.to_uppercase());
@@ -551,7 +631,7 @@ async fn engine_all_in_one(mut s: Shared, repaint: Box<dyn Fn() + Send>) {
     );
 
     let mut slots: BTreeMap<String, StationSlot<InProcConnector>> = BTreeMap::new();
-    let net_chat = Arc::new(Mutex::new(VecDeque::new()));
+    let net = NetShared::new();
     let mut auto_chat: Option<JoinHandle<()>> = None;
     let core_for_make = Arc::clone(&core);
     let make = move |c: &str| InProcConnector::new(Arc::clone(&core_for_make), c);
@@ -568,7 +648,8 @@ async fn engine_all_in_one(mut s: Shared, repaint: Box<dyn Fn() + Send>) {
                     snap.channel_log = ch_log.lock().unwrap().iter().cloned().collect();
                     snap.monitor_decodes = mon_dec.lock().unwrap().iter().cloned().collect();
                     snap.stations = stations;
-                    snap.net_chat = net_chat.lock().unwrap().iter().cloned().collect();
+                    snap.net_chat = net.chat.lock().unwrap().iter().cloned().collect();
+                    snap.images = net.images.lock().unwrap().clone();
                     snap.auto_chat_on = auto_chat.is_some();
                 }
                 repaint();
@@ -576,7 +657,7 @@ async fn engine_all_in_one(mut s: Shared, repaint: Box<dyn Fn() + Send>) {
             Some(cmd) = s.cmd_rx.recv() => {
                 match cmd {
                     EngineCmd::SetChannel(cfg) => core.set_config(cfg),
-                    other => handle_station_cmd(other, &mut slots, &make, &net_chat, &mut auto_chat, &s.cmd_tx).await,
+                    other => handle_station_cmd(other, &mut slots, &make, &net, &mut auto_chat, &s.cmd_tx).await,
                 }
             }
             else => break,
@@ -632,7 +713,7 @@ async fn engine_channel_host(mut s: Shared, repaint: Box<dyn Fn() + Send>, port:
 async fn engine_client(mut s: Shared, repaint: Box<dyn Fn() + Send>, addr: String) {
     s.snapshot.lock().unwrap().link_addr = Some(addr.clone());
     let mut slots: BTreeMap<String, StationSlot<TcpConnector>> = BTreeMap::new();
-    let net_chat = Arc::new(Mutex::new(VecDeque::new()));
+    let net = NetShared::new();
     let mut auto_chat: Option<JoinHandle<()>> = None;
     let addr_for_make = addr.clone();
     let make = move |c: &str| TcpConnector::new(addr_for_make.clone(), c);
@@ -646,13 +727,14 @@ async fn engine_client(mut s: Shared, repaint: Box<dyn Fn() + Send>, addr: Strin
                 {
                     let mut snap = s.snapshot.lock().unwrap();
                     snap.stations = stations;
-                    snap.net_chat = net_chat.lock().unwrap().iter().cloned().collect();
+                    snap.net_chat = net.chat.lock().unwrap().iter().cloned().collect();
+                    snap.images = net.images.lock().unwrap().clone();
                     snap.auto_chat_on = auto_chat.is_some();
                 }
                 repaint();
             }
             Some(cmd) = s.cmd_rx.recv() => {
-                handle_station_cmd(cmd, &mut slots, &make, &net_chat, &mut auto_chat, &s.cmd_tx).await;
+                handle_station_cmd(cmd, &mut slots, &make, &net, &mut auto_chat, &s.cmd_tx).await;
             }
             else => break,
         }
@@ -818,6 +900,42 @@ mod tests {
             interval_ms: 800,
         });
         assert!(wait_until(&h, 3, |s| !s.auto_chat_on));
+    }
+
+    #[test]
+    fn received_png_shows_in_images() {
+        let dir = std::env::temp_dir().join(format!("atchat_img_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let png = dir.join("kart.png");
+        let mut img = image::RgbaImage::new(8, 6);
+        for p in img.pixels_mut() {
+            *p = image::Rgba([200, 40, 40, 255]);
+        }
+        img.save(&png).unwrap();
+
+        let h = EngineHandle::spawn_all_in_one(egui::Context::default());
+        for c in ["TA1ABC", "TA2DEF"] {
+            h.send(EngineCmd::AddStation {
+                callsign: c.into(),
+                mode: netproto::Mode::Qpsk,
+            });
+        }
+        assert!(wait_until(&h, 10, |s| s.stations.len() == 2));
+
+        h.send(EngineCmd::SendFile {
+            callsign: "TA1ABC".into(),
+            path: png,
+            dst: "TA2DEF".into(),
+        });
+
+        assert!(
+            wait_until(&h, 45, |s| s
+                .images
+                .iter()
+                .any(|i| i.from == "TA1ABC" && i.width == 8 && i.height == 6)),
+            "gelen PNG snapshot.images'e düşmeliydi"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
