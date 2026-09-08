@@ -1,18 +1,18 @@
-//! `modem.py` portu — gerçek bir OFDM modülatör/demodülatör.
+//! A port of `modem.py` — a real OFDM modulator/demodulator.
 //!
-//! Bu, uydurma ton üreten bir "sonifikasyon" DEĞİL: gerçek IFFT/FFT ile
-//! modüle/demodüle eder, gerçek bit hatalarına maruz kalır. Python
-//! sürümüyle **bit seviyesinde sadık** olması hedeflenmiştir — çapraz
-//! vektör testleri (`tests/`) bunu doğrular.
+//! This is NOT a "sonification" that plays made-up tones: it modulates and
+//! demodulates with a real IFFT/FFT and is subject to real bit errors. It is
+//! meant to be **bit-for-bit faithful** to the Python version — the cross-
+//! vector tests (`tests/`) prove that.
 //!
-//! PHY: 8000 Hz örnekleme, 256 nokta FFT (~31.25 Hz alt taşıyıcı aralığı),
-//! 64 örnek (8 ms) koruma aralığı, ~2.7 kHz bant içinde 77 veri alt
-//! taşıyıcısı (~312–2688 Hz). Senkronizasyon Schmidl-Cox tarzı öz-korelasyon;
-//! kodlama frekans-domeninde diferansiyel BPSK/QPSK.
+//! PHY: 8000 Hz sample rate, 256-point FFT (~31.25 Hz subcarrier spacing),
+//! a 64-sample (8 ms) guard interval, 77 data subcarriers inside a ~2.7 kHz
+//! band (~312–2688 Hz). Synchronisation is Schmidl-Cox-style autocorrelation;
+//! coding is frequency-domain differential BPSK/QPSK.
 //!
-//! Bilinçli basitleştirmeler (modem.py ile aynı): adaptif bit yükleme yok,
-//! kanal kestirimi/ekolayzır yok, LDPC/RS yok — bütünlük yalnız CRC32,
-//! hata düzeltme üst katman ARQ'ya bırakılıyor.
+//! Deliberate simplifications (the same as `modem.py`): no adaptive bit
+//! loading, no channel estimation/equaliser, no LDPC/RS — integrity is CRC32
+//! only, and error correction is left to the upper layer's ARQ.
 
 use std::sync::Arc;
 
@@ -24,31 +24,31 @@ pub use netproto::Mode;
 
 pub const SAMPLE_RATE: u32 = 8000;
 pub const N: usize = 256; // FFT boyutu
-pub const CP_LEN: usize = 64; // koruma aralığı / cyclic prefix (8 ms)
+pub const CP_LEN: usize = 64; // guard interval / cyclic prefix (8 ms)
 pub const SYMBOL_LEN: usize = N + CP_LEN; // 320
 
-const HEADER_BITS: usize = 17; // 16-bit uzunluk + 1-bit mod bayrağı
+const HEADER_BITS: usize = 17; // 16-bit length + 1-bit mode flag
 const HEADER_REPEAT: usize = 4;
 const SYNC_THRESHOLD: f64 = 0.25;
 
-/// `list(range(10, 87))` — 77 veri alt taşıyıcısı.
+/// `list(range(10, 87))` — 77 data subcarriers.
 #[inline]
 fn data_carriers() -> impl Iterator<Item = usize> {
     10..87
 }
 const N_DATA_CARRIERS: usize = 77;
-/// Diferansiyel kodlamada bilgi taşıyan taşıyıcı sayısı (ilk taşıyıcı = ref).
+/// The number of subcarriers that carry information under differential coding (the first is the reference).
 const N_INFO: usize = N_DATA_CARRIERS - 1; // 76
 
-/// `list(range(2, N // 2, 2))` — Schmidl-Cox: çift indeksler (63 adet).
+/// `list(range(2, N // 2, 2))` — Schmidl-Cox: the even indices (63 of them).
 #[inline]
 fn preamble_carriers() -> impl Iterator<Item = usize> {
     (2..N / 2).step_by(2)
 }
 
 /// `np.random.RandomState(1234).choice([1.0, -1.0], size=63)` — TX/RX'in
-/// bildiği SABİT preamble. NumPy RNG'yi taklit etmek yerine dizinin kendisi
-/// gömülü (bkz. plan: `python3 -c "..."` ile üretildi).
+/// preamble both TX and RX know. Rather than imitating the NumPy RNG, the
+/// sequence itself is embedded (see the plan: generated with `python3 -c "..."`).
 #[rustfmt::skip]
 const PREAMBLE_SYMBOLS: [f64; 63] = [
     -1.0,-1.0, 1.0,-1.0, 1.0, 1.0, 1.0,-1.0,-1.0,-1.0,-1.0,-1.0, 1.0, 1.0,-1.0, 1.0,
@@ -58,10 +58,10 @@ const PREAMBLE_SYMBOLS: [f64; 63] = [
 ];
 
 // ------------------------------------------------------------------ //
-// Ortak yardımcılar
+// Shared helpers
 // ------------------------------------------------------------------ //
 
-/// `{taşıyıcı_indeksi: karmaşık_değer}` -> N örnekli REEL zaman sinyali
+/// `{carrier_index: complex_value}` -> an N-sample REAL time-domain signal
 /// (Hermitian simetri ile: `X[N-k] = conj(X[k])`). `np.fft.ifft(...).real`.
 fn spectrum_to_time(inv_fft: &dyn Fft<f64>, pairs: &[(usize, Complex64)]) -> Vec<f64> {
     let mut x = vec![Complex64::new(0.0, 0.0); N];
@@ -70,11 +70,11 @@ fn spectrum_to_time(inv_fft: &dyn Fft<f64>, pairs: &[(usize, Complex64)]) -> Vec
         x[N - k] = v.conj();
     }
     inv_fft.process(&mut x);
-    // rustfft inverse ölçeksiz; np.fft.ifft 1/N ile ölçekli.
+    // rustfft's inverse is unscaled; np.fft.ifft is scaled by 1/N.
     x.iter().map(|c| c.re / N as f64).collect()
 }
 
-/// `_add_cp`: son `CP_LEN` örneği başa kopyala -> 320 örnek.
+/// `_add_cp`: copy the last `CP_LEN` samples to the front -> 320 samples.
 fn add_cp(symbol: &[f64]) -> Vec<f64> {
     let mut out = Vec::with_capacity(SYMBOL_LEN);
     out.extend_from_slice(&symbol[N - CP_LEN..]);
@@ -90,7 +90,7 @@ fn make_preamble(inv_fft: &dyn Fft<f64>) -> Vec<f64> {
     add_cp(&spectrum_to_time(inv_fft, &pairs))
 }
 
-/// `np.unpackbits` — byte içinde MSB-first.
+/// `np.unpackbits` — MSB-first within a byte.
 fn bits_from_bytes(data: &[u8]) -> Vec<u8> {
     let mut bits = Vec::with_capacity(data.len() * 8);
     for &b in data {
@@ -101,7 +101,7 @@ fn bits_from_bytes(data: &[u8]) -> Vec<u8> {
     bits
 }
 
-/// `np.packbits` — MSB-first; tam byte'a inmeyen artık bitler atılır.
+/// `np.packbits` — MSB-first; leftover bits that do not fill a whole byte are discarded.
 fn bytes_from_bits(bits: &[u8]) -> Vec<u8> {
     let n = (bits.len() / 8) * 8;
     let mut out = Vec::with_capacity(n / 8);
@@ -115,8 +115,8 @@ fn bytes_from_bits(bits: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Diferansiyel akümülatör: `seq[0] = 1+0j` (referans), sonra `cur *= step`.
-/// N_INFO adım -> N_DATA_CARRIERS değer.
+/// Differential accumulator: `seq[0] = 1+0j` (the reference), then `cur *= step`.
+/// N_INFO steps -> N_DATA_CARRIERS values.
 fn differential_sequence(steps: &[Complex64]) -> Vec<Complex64> {
     let mut seq = Vec::with_capacity(steps.len() + 1);
     let mut cur = Complex64::new(1.0, 0.0);
@@ -133,7 +133,7 @@ fn carrier_spectrum(seq: &[Complex64]) -> Vec<(usize, Complex64)> {
 }
 
 // ------------------------------------------------------------------ //
-// Header sembolü (BPSK, frekans-domeninde DİFERANSİYEL kodlama)
+// The header symbol (BPSK, frequency-domain DIFFERENTIAL coding)
 // ------------------------------------------------------------------ //
 
 fn make_header_symbol(inv_fft: &dyn Fft<f64>, payload_len: usize, mode: Mode) -> Vec<f64> {
@@ -143,7 +143,7 @@ fn make_header_symbol(inv_fft: &dyn Fft<f64>, payload_len: usize, mode: Mode) ->
     }
     header_bits.push(if mode == Mode::Bpsk { 1 } else { 0 });
 
-    // tile(header_bits, 4) -> 68, sonra 76'ya sıfır pad.
+    // tile(header_bits, 4) -> 68, then zero-pad to 76.
     let mut padded = [0u8; N_INFO];
     let repeated_len = HEADER_BITS * HEADER_REPEAT; // 68
     for i in 0..repeated_len.min(N_INFO) {
@@ -179,7 +179,7 @@ fn decode_header_symbol(fwd_fft: &dyn Fft<f64>, symbol_no_cp: &[f64]) -> Option<
             votes[j] += bits[r * HEADER_BITS + j] as u32;
         }
     }
-    // Python: decoded = votes > reps/2  (float bölme) -> reps=4 için "> 2".
+    // Python: decoded = votes > reps/2  (float division) -> "> 2" for reps=4.
     let decoded: Vec<u8> = votes.iter().map(|&v| (2 * v > reps as u32) as u8).collect();
 
     let mut val = 0usize;
@@ -195,7 +195,7 @@ fn decode_header_symbol(fwd_fft: &dyn Fft<f64>, symbol_no_cp: &[f64]) -> Option<
 }
 
 // ------------------------------------------------------------------ //
-// Veri sembolleri (QPSK varsayılan, BPSK opsiyonel)
+// Data symbols (QPSK by default, BPSK optional)
 // ------------------------------------------------------------------ //
 
 #[inline]
@@ -266,8 +266,8 @@ fn decode_data_symbol(fwd_fft: &dyn Fft<f64>, symbol_no_cp: &[f64], mode: Mode) 
 // Modem
 // ------------------------------------------------------------------ //
 
-/// OFDM modülatör/demodülatör. Durumsuz: her çağrı bağımsız bir aktarımı
-/// (preamble + header + veri) baştan sona işler. FFT planları önbelleklenir.
+/// The OFDM modulator/demodulator. Stateless: every call handles one whole
+/// transmission (preamble + header + data) from start to finish. The FFT plans are cached.
 #[derive(Clone)]
 pub struct Modem {
     fwd: Arc<dyn Fft<f64>>,
@@ -289,12 +289,12 @@ impl Modem {
         }
     }
 
-    /// JSON/ham payload -> int16 ses örnekleri (bir aktarımın tamamı).
+    /// JSON/raw payload -> int16 audio samples (one whole transmission).
     pub fn modulate(&self, payload: &[u8], mode: Mode) -> Vec<i16> {
         self.modulate_with_leadin(payload, mode, rand::thread_rng().gen_range(20..300))
     }
 
-    /// Test için: lead-in uzunluğu deterministik verilebilir.
+    /// For tests: the lead-in length can be given deterministically.
     pub fn modulate_with_leadin(&self, payload: &[u8], mode: Mode, lead_in: usize) -> Vec<i16> {
         let crc = netproto::crc32(payload);
         let mut full = payload.to_vec();
@@ -308,7 +308,7 @@ impl Modem {
         for sym in make_data_symbols(&*self.inv, &bits, mode) {
             waveform.extend(sym);
         }
-        // Son sembol birkaç örnek kayarsa arabellek dışına taşmasın diye tampon.
+        // Padding so the last symbol does not run past the buffer if it slips a few samples.
         waveform.extend(std::iter::repeat(0.0).take(CP_LEN));
 
         let peak = waveform
@@ -321,14 +321,14 @@ impl Modem {
             .iter()
             .map(|v| {
                 let s = v * scale;
-                // np.astype(np.int16): sıfıra doğru kırpma.
+                // np.astype(np.int16): truncation toward zero.
                 s.trunc().clamp(i16::MIN as f64, i16::MAX as f64) as i16
             })
             .collect()
     }
 
-    /// int16 ses örnekleri -> payload bytes. Çözülemezse `None` (gerçek
-    /// radyoda "hiçbir şey duymamış" gibi davranılır).
+    /// int16 audio samples -> payload bytes. `None` if it cannot be decoded
+    /// (on a real radio this is treated as "heard nothing").
     pub fn demodulate(&self, samples: &[i16]) -> Option<Vec<u8>> {
         let x: Vec<f64> = samples.iter().map(|&s| s as f64).collect();
         if x.len() < SYMBOL_LEN * 2 {
@@ -359,10 +359,10 @@ impl Modem {
             return None;
         }
 
-        // CP, periyodik preamble'ın kopyası olduğundan ham skorda gerçek
-        // başlangıçtan CP_LEN önce başlayan bir "plato" oluşur. CP_LEN
-        // genişliğinde hareketli ortalama bunu tek, gürültüye dayanıklı bir
-        // tepeye dönüştürür (klasik Schmidl-Cox pratiği).
+        // Because the CP is a copy of the periodic preamble, the raw score has
+        // a "plateau" that starts CP_LEN before the true start. A moving
+        // average CP_LEN wide turns it into a single, noise-robust peak (the
+        // classic Schmidl-Cox practice).
         let window = CP_LEN;
         let mut csum = vec![0.0_f64; raw.len() + 1];
         for i in 0..raw.len() {
@@ -429,15 +429,15 @@ impl Modem {
     }
 }
 
-/// Bir payload'ın gerçekte kaç saniye "havada" kalacağı (lead-in hariç).
-/// `modem.airtime_seconds` portu — PHY tablosuyla karşılaştırma için.
+/// How many seconds a payload actually stays "on the air" (lead-in excluded).
+/// A port of `modem.airtime_seconds` — for comparing against the PHY table.
 pub fn airtime_seconds(payload_len_bytes: usize, mode: Mode) -> f64 {
     let full_len = payload_len_bytes + 4;
     let bits_needed = full_len * 8;
     let bits_per_carrier = if mode == Mode::Bpsk { 1 } else { 2 };
     let bits_per_symbol = bits_per_carrier * N_INFO;
     let n_data_symbols = bits_needed.div_ceil(bits_per_symbol);
-    let n_symbols = 2 + n_data_symbols; // preamble + header + veri
+    let n_symbols = 2 + n_data_symbols; // preamble + header + data
     (n_symbols * SYMBOL_LEN) as f64 / SAMPLE_RATE as f64
 }
 

@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Kanal fiziği: yarı çift yönlü erişim, AWGN, multipath (channel_server.py portu) + Link soyutlaması"
+description = "Channel physics: half-duplex access, AWGN, multipath (a port of channel_server.py) + the Link abstraction"
 
 [dependencies]
 netproto.workspace = true

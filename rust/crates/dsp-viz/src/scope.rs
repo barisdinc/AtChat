@@ -1,6 +1,6 @@
-//! Zaman domeni "scope" — kayan örnek halkası + piksel-sütunu min/max zarfı.
-//! Kısa geçişler (OFDM patlamasının kenarı gibi) tek piksele düşse bile
-//! görünsün diye sütun başına hem min hem max tutulur.
+//! A time-domain "scope" — a rolling sample ring + a per-pixel-column min/max
+//! envelope. Both min and max are kept per column so short transients (like
+//! the edge of an OFDM burst) stay visible even when they fall on a single pixel.
 
 use std::collections::VecDeque;
 
@@ -10,7 +10,7 @@ pub struct ScopeBuf {
 }
 
 impl ScopeBuf {
-    /// `capacity_samples`: tutulacak en fazla örnek (ör. 1 sn @ 8 kHz = 8000).
+    /// `capacity_samples`: the most samples to keep (e.g. 1 s @ 8 kHz = 8000).
     pub fn new(capacity_samples: usize) -> Self {
         Self {
             ring: VecDeque::with_capacity(capacity_samples),
@@ -39,8 +39,9 @@ impl ScopeBuf {
         self.ring.clear();
     }
 
-    /// En yeni `window` örneği `width` piksel sütununa indir. Her sütun için
-    /// `(min, max)` (normalize, -1..1). Veri yoksa `(0,0)` dolu bir vektör.
+    /// Reduce the newest `window` samples into `width` pixel columns. Per
+    /// column `(min, max)` (normalised, -1..1). A vector full of `(0,0)` when
+    /// there is no data.
     pub fn envelope(&self, window: usize, width: usize) -> Vec<(f32, f32)> {
         let width = width.max(1);
         if self.ring.is_empty() {
@@ -49,7 +50,7 @@ impl ScopeBuf {
         let window = window.max(1).min(self.ring.len());
         let start = self.ring.len() - window;
 
-        // Halkayı dilimlemek için indeksli erişim: VecDeque `get` O(1).
+        // Indexed access to slice the ring: VecDeque `get` is O(1).
         let mut out = Vec::with_capacity(width);
         for col in 0..width {
             let a = start + (col * window) / width;
@@ -94,7 +95,7 @@ mod tests {
         s.push_i16(&block);
         let env = s.envelope(1000, 50);
         assert_eq!(env.len(), 50);
-        // Sinüs ~±0.61; her sütunda max > 0 ve min < 0 olmalı.
+        // Sine ~±0.61; every column should have max > 0 and min < 0.
         assert!(env.iter().all(|(mn, mx)| mx >= mn));
         assert!(env.iter().any(|(_, mx)| *mx > 0.3));
         assert!(env.iter().any(|(mn, _)| *mn < -0.3));

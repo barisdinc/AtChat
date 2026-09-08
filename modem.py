@@ -1,48 +1,49 @@
 """
-modem.py - Gerçek bir OFDM ses modemi (modülatör + demodülatör).
+modem.py - A real OFDM audio modem (modulator + demodulator).
 
-Tasarım sohbetimizdeki PHY parametreleriyle uyumlu: 8000 Hz örnekleme,
-256 nokta FFT (~31.25 Hz alt taşıyıcı aralığı), 64 örnek (8ms) koruma
-aralığı, ~2.7 kHz bant içinde 77 veri alt taşıyıcısı (~312-2688 Hz).
+Matches the PHY parameters from our design discussion: 8000 Hz sample rate,
+256-point FFT (~31.25 Hz subcarrier spacing), a 64-sample (8 ms) guard
+interval, 77 data subcarriers inside a ~2.7 kHz band (~312-2688 Hz).
 
-Bilinçli basitleştirmeler (MVP - bir sonraki geliştirme adımları):
-  - Adaptif bit yükleme yok: header BPSK (sağlam), veri QPSK (sabit hız).
-  - Kanal kestirimi/ekolayzır yok: koruma aralığı (8ms) içindeki
-    gecikmelere (multipath) doğal olarak dayanıklı, ama onun dışına
-    taşan gecikmelerde performans bilerek düşer - tam da OFDM'in
-    avantajını VE sınırını gösterir.
-  - Kanal kodlaması (LDPC/RS) yok: bütünlük sadece CRC32 ile denetleniyor,
-    hata düzeltme üst katmandaki blok bazlı ARQ'ya bırakılıyor.
+Deliberate simplifications (MVP - the next development steps):
+  - No adaptive bit loading: the header is BPSK (robust), the data QPSK
+    (a fixed rate).
+  - No channel estimation/equaliser: naturally robust to delays (multipath)
+    within the guard interval (8 ms), but performance drops on purpose for
+    delays beyond it - which shows OFDM's advantage AND its limit.
+  - No channel coding (LDPC/RS): integrity is checked with CRC32 only, and
+    error correction is left to the upper layer's block-based ARQ.
 
-Senkronizasyon Schmidl-Cox yöntemine benzer bir öz-korelasyon ile yapılıyor:
-preamble sadece çift indeksli alt taşıyıcılarda enerji taşır, bu da zaman
-domeninde iki özdeş yarımdan oluşan bir sembol üretir - alıcı bu simetriyi
-arayarak aktarımın başlangıcını (örnek hassasiyetinde) bulur.
+Synchronisation is done with an autocorrelation similar to the Schmidl-Cox
+method: the preamble carries energy only on the even-indexed subcarriers,
+which produces a symbol made of two identical halves in the time domain -
+the receiver searches for that symmetry to find the start of the
+transmission (to sample precision).
 """
 import numpy as np
 import zlib
 
 SAMPLE_RATE = 8000
-N = 256                     # FFT boyutu
-CP_LEN = 64                 # koruma aralığı / cyclic prefix (8ms)
-SYMBOL_LEN = N + CP_LEN      # bir OFDM sembolünün toplam örnek sayısı
+N = 256                     # FFT size
+CP_LEN = 64                 # guard interval / cyclic prefix (8 ms)
+SYMBOL_LEN = N + CP_LEN      # total sample count of one OFDM symbol
 
-DATA_CARRIERS = list(range(10, 87))                     # 77 alt taşıyıcı
-PREAMBLE_CARRIERS = list(range(2, N // 2, 2))            # Schmidl-Cox: çift indeksler
+DATA_CARRIERS = list(range(10, 87))                     # 77 subcarriers
+PREAMBLE_CARRIERS = list(range(2, N // 2, 2))            # Schmidl-Cox: even indices
 
-HEADER_BITS = 17            # 16-bit uzunluk + 1-bit mod bayrağı (0=QPSK,1=BPSK)
-HEADER_REPEAT = 4           # tekrar sayısı (76 taşıyıcıya sığacak kadar)
+HEADER_BITS = 17            # 16-bit length + 1-bit mode flag (0=QPSK,1=BPSK)
+HEADER_REPEAT = 4           # repeat count (enough to fit 76 carriers)
 
-_rng = np.random.RandomState(1234)  # TX/RX'in bildiği SABİT preamble
+_rng = np.random.RandomState(1234)  # the FIXED preamble both TX and RX know
 _PREAMBLE_SYMBOLS = _rng.choice([1.0, -1.0], size=len(PREAMBLE_CARRIERS))
 
 
 # ------------------------------------------------------------------ #
-# Ortak yardımcılar
+# Shared helpers
 # ------------------------------------------------------------------ #
 def _spectrum_to_time(spectrum: dict) -> np.ndarray:
-    """{taşıyıcı_indeksi: karmaşık_değer} -> N örnekli REEL zaman sinyali
-    (Hermitian simetri ile: X[N-k] = conj(X[k]))."""
+    """{carrier_index: complex_value} -> an N-sample REAL time-domain signal
+    (with Hermitian symmetry: X[N-k] = conj(X[k]))."""
     X = np.zeros(N, dtype=complex)
     for k, v in spectrum.items():
         X[k] = v
@@ -69,15 +70,15 @@ def _bytes_from_bits(bits: np.ndarray) -> bytes:
 
 
 # ------------------------------------------------------------------ #
-# Header sembolü (BPSK, frekans-domeninde DİFERANSİYEL kodlama)
+# The header symbol (BPSK, frequency-domain DIFFERENTIAL coding)
 #
-# İlk taşıyıcı (DATA_CARRIERS[0]) sabit bir referans (1+0j) olarak kalır,
-# bilgi taşımaz. Sonraki her taşıyıcı, bir önceki taşıyıcıya göre FAZ
-# FARKI olarak kodlanır. Bu sayede senkronizasyondaki küçük bir örnek
-# kayması (k'ye bağlı doğrusal faz kayması yaratır) bitişik taşıyıcılar
-# arasında büyük ölçüde iptal olur - sadece küçük, sabit bir kalıntı
-# kalır. Kanal kestirimi/ekolayzır olmadan gürültüye dayanıklılık için
-# gereken standart bir teknik (differential OFDM).
+# The first carrier (DATA_CARRIERS[0]) stays a fixed reference (1+0j) and
+# carries no information. Every following carrier is coded as the PHASE
+# DIFFERENCE relative to the previous carrier. This way a small sample slip
+# in synchronisation (which creates a k-dependent linear phase shift) mostly
+# cancels between adjacent carriers - only a small, constant residue
+# remains. A standard technique for noise robustness without channel
+# estimation/equalisation (differential OFDM).
 # ------------------------------------------------------------------ #
 def _make_header_symbol(payload_len: int, mode: str) -> np.ndarray:
     len_bits = [(payload_len >> (16 - 1 - i)) & 1 for i in range(16)]
@@ -87,7 +88,7 @@ def _make_header_symbol(payload_len: int, mode: str) -> np.ndarray:
     n_info = len(DATA_CARRIERS) - 1
     padded = np.zeros(n_info, dtype=int)
     padded[:min(len(repeated), n_info)] = repeated[:n_info]
-    steps = np.where(padded == 0, 1.0 + 0j, -1.0 + 0j)  # BPSK adım çarpanı
+    steps = np.where(padded == 0, 1.0 + 0j, -1.0 + 0j)  # BPSK step multiplier
 
     seq = [1.0 + 0j]
     cur = 1.0 + 0j
@@ -119,7 +120,7 @@ def _decode_header_symbol(symbol_no_cp: np.ndarray):
 
 
 # ------------------------------------------------------------------ #
-# Veri sembolleri (QPSK varsayılan, BPSK opsiyonel - daha sağlam/yavaş)
+# Data symbols (QPSK by default, BPSK optional - more robust/slower)
 # ------------------------------------------------------------------ #
 QPSK_MAP = {
     (0, 0): (1 + 1j) / np.sqrt(2),
@@ -176,8 +177,8 @@ def _decode_data_symbol(symbol_no_cp: np.ndarray, mode: str) -> np.ndarray:
 # Modem
 # ------------------------------------------------------------------ #
 class Modem:
-    """OFDM modülatör/demodülatör. Durumsuz: her çağrı bağımsız bir
-    aktarımı (preamble + header + veri) baştan sona işler."""
+    """OFDM modulator/demodulator. Stateless: every call handles one whole
+    transmission (preamble + header + data) from start to finish."""
 
     def modulate(self, payload: bytes, mode: str = "QPSK") -> np.ndarray:
         crc = zlib.crc32(payload) & 0xFFFFFFFF
@@ -190,11 +191,11 @@ class Modem:
 
         waveform = np.concatenate([preamble, header] + data_symbols)
 
-        # Küçük, rastgele bir "sessizlik" öne ekleniyor - alıcı gerçekten
-        # korelasyonla senkronizasyon yapmak zorunda kalsın diye (sample 0'ın
-        # her zaman başlangıç olduğunu varsaymasın). Sona da küçük sabit bir
-        # tampon ekliyoruz - sync tahmini birkaç örnek kayarsa (gürültüde
-        # olağan), son sembolün arabellek dışına taşmasını önlemek için.
+        # A small, random "silence" is prepended so the receiver really has
+        # to synchronise by correlation (it must not assume sample 0 is always
+        # the start). A small fixed pad is also appended - so that if the sync
+        # estimate slips a few samples (common under noise), the last symbol
+        # does not run past the buffer.
         lead_in = np.zeros(np.random.randint(20, 300))
         trailing_pad = np.zeros(CP_LEN)
         waveform = np.concatenate([lead_in, waveform, trailing_pad])
@@ -204,9 +205,9 @@ class Modem:
         return waveform.astype(np.int16)
 
     def demodulate(self, samples: np.ndarray):
-        """samples: int16/float dizisi (BİR aktarımın tamamı).
-        Başarılıysa payload bytes döner, çözülemezse None (gerçek radyoda
-        da böyle olurdu: hiçbir şey duymamış gibi davranırsınız)."""
+        """samples: an int16/float array (ONE whole transmission).
+        Returns payload bytes on success, None if it cannot be decoded (this
+        is how a real radio behaves too: you act as if you heard nothing)."""
         x = np.asarray(samples, dtype=float)
         if len(x) < SYMBOL_LEN * 2:
             return None
@@ -223,12 +224,12 @@ class Modem:
             denom = (np.linalg.norm(a) * np.linalg.norm(b)) or 1.0
             raw_scores[ps] = abs(np.dot(a, b)) / denom
 
-        # CP, periyodik preamble'ın bir kopyası olduğundan ham korelasyon
-        # skoru gerçek başlangıçtan CP_LEN kadar önce başlayan bir "plato"
-        # oluşturur - gürültüde bu platonun tam kenarını bulmak kırılgandır.
-        # Standart düzeltme: skoru CP_LEN genişliğinde bir hareketli
-        # ortalamayla yumuşatmak, platoyu TEK ve gürültüye dayanıklı bir
-        # tepe noktasına dönüştürür (klasik Schmidl-Cox pratiği).
+        # Because the CP is a copy of the periodic preamble, the raw
+        # correlation score forms a "plateau" that starts CP_LEN before the
+        # true start - finding the exact edge of that plateau under noise is
+        # fragile. The standard fix: smoothing the score with a moving average
+        # CP_LEN wide turns the plateau into a SINGLE, noise-robust peak (the
+        # classic Schmidl-Cox practice).
         if len(raw_scores) < CP_LEN:
             return None
         window = CP_LEN
@@ -236,9 +237,9 @@ class Modem:
         smoothed = (csum[window:] - csum[:-window]) / window
         best_idx = int(np.argmax(smoothed))
         best_score = smoothed[best_idx]
-        best_ps = best_idx + window  # platonun sonuna karşılık gelir
+        best_ps = best_idx + window  # corresponds to the end of the plateau
 
-        if best_score < 0.25:  # yeterince güçlü bir preamble bulunamadı -> "sessizlik"
+        if best_score < 0.25:  # no strong enough preamble found -> "silence"
             return None
 
         preamble_cp_start = best_ps - CP_LEN
@@ -283,12 +284,12 @@ class Modem:
 
 
 def airtime_seconds(payload_len_bytes: int, mode: str = "QPSK") -> float:
-    """Bir payload'ın gerçekte kaç saniye 'havada' kalacağını (lead-in
-    hariç) hesaplar - PHY tasarım tablosuyla karşılaştırma için."""
+    """Computes how many seconds a payload actually stays 'on the air'
+    (lead-in excluded) - for comparing against the PHY design table."""
     full_len = payload_len_bytes + 4
     bits_needed = full_len * 8
     bits_per_carrier = 1 if mode == "BPSK" else 2
     bits_per_symbol = bits_per_carrier * (len(DATA_CARRIERS) - 1)
     n_data_symbols = -(-bits_needed // bits_per_symbol)
-    n_symbols = 2 + n_data_symbols  # preamble + header + veri
+    n_symbols = 2 + n_data_symbols  # preamble + header + data
     return n_symbols * SYMBOL_LEN / SAMPLE_RATE

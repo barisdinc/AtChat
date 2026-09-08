@@ -1,16 +1,17 @@
-//! `client.py`'deki `Client` sınıfının portu — NET istasyon protokol mantığı.
+//! A port of the `Client` class in `client.py` — the NET station protocol logic.
 //!
-//! Model `client.py` ile birebir: TEK bir `receive_loop` okur; `send_frame`
-//! bir `tx` kilidi ("PTT") ardında yazar; gelen bir çerçeveye tetiklenen TÜM
-//! gönderimler `tokio::spawn` ile arka planda başlatılır — ASLA `receive_loop`
-//! çağrı zincirinde `await` edilmez (CLAUDE.md hata #1: kilitlenme).
+//! The model matches `client.py` exactly: a SINGLE `receive_loop` reads;
+//! `send_frame` writes behind a `tx` lock ("PTT"); EVERY send triggered by an
+//! incoming frame is started in the background with `tokio::spawn` — it is
+//! NEVER `await`ed on the `receive_loop` call chain (CLAUDE.md bug #1:
+//! deadlock).
 //!
-//! Korunan diğer düzeltmeler:
-//!   - Kontrol penceresi: `_send_blocks` içinde her `control_window_every`
-//!     blokta `control_window_pause` duraklama (CLAUDE.md hata #3).
-//!   - Rejoin: aktif beacon duyulduysa asla kendini master ilan etme
-//!     (`reconnect` yalnız `JOIN_REQUEST` gönderir).
-//!   - Master çakışması: alfabetik küçük çağrı işareti kazanır.
+//! Other fixes preserved:
+//!   - The control window: a `control_window_pause` pause every
+//!     `control_window_every` blocks in `_send_blocks` (CLAUDE.md bug #3).
+//!   - Rejoin: never declare yourself master if an active beacon is heard
+//!     (`reconnect` only sends a `JOIN_REQUEST`).
+//!   - Master conflict: the alphabetically smaller callsign wins.
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -54,18 +55,18 @@ pub struct StationShared<C: Connector> {
     connector: C,
     modem: Modem,
 
-    /// "PTT": aynı anda tek çerçeve yazılır. `None` -> bağlantı kopuk.
+    /// "PTT": only one frame is written at a time. `None` -> the link is down.
     tx: tokio::sync::Mutex<Option<C::Tx>>,
     connected: AtomicBool,
-    /// `send_frame`'in beklediği TX_GRANTED / CHANNEL_BUSY yanıtı buraya gelir.
+    /// The TX_GRANTED / CHANNEL_BUSY reply `send_frame` is waiting for arrives here.
     tx_reply: Mutex<Option<oneshot::Sender<ServerMsg>>>,
-    /// Aktif ARQ döngüsünün beklediği BULK_STATUS.
+    /// The BULK_STATUS an active ARQ loop is waiting for.
     status_waiters: Mutex<HashMap<String, oneshot::Sender<Vec<usize>>>>,
 
     state: Mutex<StationState>,
     events: broadcast::Sender<StationEvent>,
 
-    /// `receive_loop` bir sonraki `rx`'i buradan alır (drop/reconnect).
+    /// `receive_loop` takes its next `rx` from here (drop/reconnect).
     rx_slot: tokio::sync::Mutex<Option<C::Rx>>,
     reconnect_notify: Notify,
 }
@@ -84,7 +85,7 @@ impl<C: Connector> StationShared<C> {
     }
 
     // ------------------------------------------------------------------ //
-    // Düşük seviye gönderim (LBT + backoff)
+    // Low-level send (LBT + backoff)
     // ------------------------------------------------------------------ //
     async fn send_frame(&self, frame: Frame, mode: Mode) -> bool {
         if !self.connected.load(Relaxed) {
@@ -114,18 +115,18 @@ impl<C: Connector> StationShared<C> {
                     .is_err()
                 {
                     self.connected.store(false, Relaxed);
-                    self.log("!! gönderim başarısız, bağlantı kopmuş sayılıyor");
+                    self.log("!! send failed, the link is treated as down");
                     return false;
                 }
                 match tokio::time::timeout(Duration::from_secs(8), rrx).await {
                     Ok(Ok(m)) => m,
                     _ => {
                         self.connected.store(false, Relaxed);
-                        self.log("!! gönderim başarısız, bağlantı kopmuş sayılıyor (zaman aşımı)");
+                        self.log("!! send failed, the link is treated as down (timeout)");
                         return false;
                     }
                 }
-            }; // tx kilidi burada bırakılır
+            }; // the tx lock is released here
 
             match reply {
                 ServerMsg::TxGranted { duration } => {
@@ -140,18 +141,19 @@ impl<C: Connector> StationShared<C> {
                 ServerMsg::RxAudio { .. } => {}
             }
         }
-        self.log("!! kanal sürekli meşgul, gönderim vazgeçildi");
+        self.log("!! the channel stayed busy, the send was given up");
         false
     }
 
     // ------------------------------------------------------------------ //
-    // Alım döngüsü (TEK okuyucu)
+    // Receive loop (the SINGLE reader)
     // ------------------------------------------------------------------ //
     async fn receive_loop(self: Arc<Self>) {
         loop {
-            // ÖNEMLİ: rx_slot kilidini `.await` boyunca TUTMA — aksi halde
-            // `reconnect` yeni rx'i koyamaz ve `notified()` asla tamamlanmaz
-            // (kilitlenme). Kilit yalnız `take()` süresince tutulur.
+            // IMPORTANT: do NOT hold the rx_slot lock across `.await` —
+            // otherwise `reconnect` cannot put the new rx in and `notified()`
+            // never completes (deadlock). The lock is held only for the
+            // duration of `take()`.
             let maybe_rx = self.rx_slot.lock().await.take();
             let mut rx = match maybe_rx {
                 Some(rx) => rx,
@@ -177,7 +179,7 @@ impl<C: Connector> StationShared<C> {
                                 continue;
                             };
                             let Some(payload) = self.modem.demodulate(&samples) else {
-                                continue; // çözülemedi -> "duyulmamış" sayılır
+                                continue; // could not decode -> treated as "not heard"
                             };
                             let Ok(frame) = serde_json::from_slice::<Frame>(&payload) else {
                                 continue;
@@ -208,7 +210,7 @@ impl<C: Connector> StationShared<C> {
             Frame::JoinRequest { .. } if !is_self => {
                 let src = src.clone().unwrap_or_default();
                 if self.role() == Role::Master {
-                    self.log(format!("{src} net'e katıldı"));
+                    self.log(format!("{src} joined the net"));
                 }
                 self.request_missing_from(&src);
             }
@@ -265,7 +267,7 @@ impl<C: Connector> StationShared<C> {
         };
         let _ = self.events.send(StationEvent::StateChanged);
         if was_lost {
-            self.log(format!("{callsign} yeniden görünür oldu"));
+            self.log(format!("{callsign} became visible again"));
             self.request_missing_from(callsign);
         }
     }
@@ -294,15 +296,15 @@ impl<C: Connector> StationShared<C> {
             }
         }
         for c in newly_lost {
-            self.log(format!("{c} kayıp olarak işaretlendi"));
+            self.log(format!("{c} marked as lost"));
         }
         if changed {
             let _ = self.events.send(StationEvent::StateChanged);
         }
     }
 
-    /// Bir istasyon geri döndüğünde, ondan alınan yarım transferler için
-    /// eksik blokları iste (SPAWN — CLAUDE.md #1).
+    /// When a station comes back, request the missing blocks for the
+    /// half-finished transfers received from it (SPAWN — CLAUDE.md #1).
     fn request_missing_from(self: &Arc<Self>, src: &str) {
         let reqs: Vec<(String, Vec<usize>)> = {
             let st = self.state.lock().unwrap();
@@ -317,7 +319,7 @@ impl<C: Connector> StationShared<C> {
         };
         for (tid, missing) in reqs {
             self.log(format!(
-                "[{tid}] {src} geri döndü, {} eksik blok isteniyor",
+                "[{tid}] {src} came back, requesting {} missing blocks",
                 missing.len()
             ));
             let this = Arc::clone(self);
@@ -339,7 +341,7 @@ impl<C: Connector> StationShared<C> {
     }
 
     // ------------------------------------------------------------------ //
-    // Master seçimi / beacon / failover
+    // Master election / beacon / failover
     // ------------------------------------------------------------------ //
     async fn on_beacon(&self, frame: &Frame) {
         let Frame::Beacon {
@@ -395,7 +397,7 @@ impl<C: Connector> StationShared<C> {
 
         if conflict {
             self.log(format!(
-                "master çakışması: {src} devam ediyor, geri çekiliyorum"
+                "master conflict: {src} continues, I am backing off"
             ));
         }
         if let Some(r) = role_evt {
@@ -426,7 +428,7 @@ impl<C: Connector> StationShared<C> {
                     st.role = Role::Master;
                     st.last_beacon_time = now;
                 }
-                self.log("beacon zaman aşımına uğradı -> master rolü alınıyor");
+                self.log("beacon timed out -> taking the master role");
                 let _ = self.events.send(StationEvent::RoleChanged(Role::Master));
                 self.send_beacon().await;
             }
@@ -473,7 +475,7 @@ impl<C: Connector> StationShared<C> {
     }
 
     // ------------------------------------------------------------------ //
-    // Sohbet
+    // Chat
     // ------------------------------------------------------------------ //
     async fn chat(&self, text: &str, dst: &str) -> bool {
         self.send_frame(
@@ -488,13 +490,13 @@ impl<C: Connector> StationShared<C> {
     }
 
     // ------------------------------------------------------------------ //
-    // Bulk transfer - gönderim
+    // Bulk transfer - send
     // ------------------------------------------------------------------ //
     async fn send_bulk(self: Arc<Self>, path: PathBuf, dst: String) {
         let data = match std::fs::read(&path) {
             Ok(d) => d,
             Err(_) => {
-                self.log(format!("dosya bulunamadı: {}", path.display()));
+                self.log(format!("file not found: {}", path.display()));
                 return;
             }
         };
@@ -509,7 +511,7 @@ impl<C: Connector> StationShared<C> {
         let filename = path
             .file_name()
             .and_then(|n| n.to_str())
-            .unwrap_or("dosya")
+            .unwrap_or("file")
             .to_string();
         let mode = self.default_mode;
         {
@@ -529,7 +531,7 @@ impl<C: Connector> StationShared<C> {
             );
         }
         self.log(format!(
-            "[{transfer_id}] {filename} -> {dst} başlıyor ({} B, {n_blocks} blok, {})",
+            "[{transfer_id}] {filename} -> {dst} starting ({} B, {n_blocks} blocks, {})",
             data.len(),
             mode.as_str()
         ));
@@ -549,14 +551,14 @@ impl<C: Connector> StationShared<C> {
             )
             .await
         {
-            self.log(format!("[{transfer_id}] başlatılamadı (bağlantı yok)"));
+            self.log(format!("[{transfer_id}] could not start (no link)"));
             return;
         }
 
         let all: Vec<usize> = (0..n_blocks).collect();
         if !self.send_blocks(&transfer_id, &all).await {
             self.log(format!(
-                "[{transfer_id}] bağlantı koptu, transfer askıda kaldı"
+                "[{transfer_id}] the link dropped, the transfer is suspended"
             ));
             return;
         }
@@ -580,24 +582,24 @@ impl<C: Connector> StationShared<C> {
                 .await;
             if !self.connected.load(Relaxed) {
                 self.log(format!(
-                    "[{transfer_id}] bağlantı koptu, transfer askıda kaldı"
+                    "[{transfer_id}] the link dropped, the transfer is suspended"
                 ));
                 return;
             }
             let Some(missing) = missing else {
                 self.log(format!(
-                    "[{transfer_id}] durum yanıtı gelmedi (tur {})",
+                    "[{transfer_id}] no status reply (round {})",
                     round_no + 1
                 ));
                 continue;
             };
             if missing.is_empty() {
-                self.log(format!("[{transfer_id}] tamamlandı (tur {})", round_no + 1));
+                self.log(format!("[{transfer_id}] complete (round {})", round_no + 1));
                 self.mark_out_done(&transfer_id);
                 return;
             }
             self.log(format!(
-                "[{transfer_id}] {} blok yeniden gönderiliyor (tur {})",
+                "[{transfer_id}] resending {} blocks (round {})",
                 missing.len(),
                 round_no + 1
             ));
@@ -624,7 +626,7 @@ impl<C: Connector> StationShared<C> {
             .await;
         }
         self.log(format!(
-            "[{transfer_id}] azami tur sayısına ulaşıldı, alıcı geri dönerse otomatik devam edecek"
+            "[{transfer_id}] reached the round limit; it will resume automatically if the receiver comes back"
         ));
     }
 
@@ -679,9 +681,9 @@ impl<C: Connector> StationShared<C> {
             }
             let _ = self.events.send(StationEvent::StateChanged);
 
-            // Kontrol penceresi (CLAUDE.md hata #3): her control_window_every
-            // blokta control_window_pause duraklama — sohbet VE BEACON'ların
-            // araya girebilmesi için. Değerlerin gerekçesi CLAUDE.md'de.
+            // The control window (CLAUDE.md bug #3): a control_window_pause
+            // pause every control_window_every blocks — so chat AND BEACONs
+            // can get through. The rationale for the values is in CLAUDE.md.
             if (i + 1) % self.cfg.control_window_every == 0 {
                 tokio::time::sleep(self.cfg.control_window_pause).await;
             }
@@ -718,7 +720,7 @@ impl<C: Connector> StationShared<C> {
             return;
         }
 
-        // Aktif ARQ döngüsü yok ama elimizde bloklar var -> gecikmeli "devam et".
+        // No active ARQ loop but we still hold the blocks -> a delayed "carry on".
         let dst = {
             let st = self.state.lock().unwrap();
             st.transfers_out.get(&transfer_id).map(|t| t.dst.clone())
@@ -726,7 +728,7 @@ impl<C: Connector> StationShared<C> {
         if let Some(dst) = dst {
             if !missing.is_empty() {
                 self.log(format!(
-                    "[{transfer_id}] gecikmeli devam isteği: {} blok yeniden gönderiliyor",
+                    "[{transfer_id}] delayed resume request: resending {} blocks",
                     missing.len()
                 ));
                 let this = Arc::clone(self);
@@ -749,7 +751,7 @@ impl<C: Connector> StationShared<C> {
     }
 
     // ------------------------------------------------------------------ //
-    // Bulk transfer - alım
+    // Bulk transfer - receive
     // ------------------------------------------------------------------ //
     fn on_bulk_meta(&self, frame: &Frame) {
         let Frame::BulkMeta {
@@ -780,7 +782,7 @@ impl<C: Connector> StationShared<C> {
             );
         }
         self.log(format!(
-            "[{transfer_id}] {src} bir transfer başlattı: {filename} ({total_blocks} blok)"
+            "[{transfer_id}] {src} started a transfer: {filename} ({total_blocks} blocks)"
         ));
         let _ = self.events.send(StationEvent::StateChanged);
     }
@@ -800,7 +802,7 @@ impl<C: Connector> StationShared<C> {
             return;
         };
         if netproto::crc32(&bytes) != *crc {
-            return; // CRC hatası -> yok say, ARQ ile yeniden istenecek
+            return; // CRC mismatch -> ignore it, ARQ will re-request it
         }
         {
             let mut st = self.state.lock().unwrap();
@@ -839,7 +841,7 @@ impl<C: Connector> StationShared<C> {
                 missing.len()
             ));
         }
-        // HER durumda BULK_STATUS gönder (SPAWN — CLAUDE.md #1).
+        // Send BULK_STATUS in EVERY case (SPAWN — CLAUDE.md #1).
         let this = Arc::clone(self);
         tokio::spawn(async move {
             this.send_frame(
@@ -876,14 +878,14 @@ impl<C: Connector> StationShared<C> {
             .received_dir
             .join(format!("{transfer_id}_{filename}"));
         if let Err(e) = std::fs::write(&out_path, &data) {
-            self.log(format!("[{transfer_id}] kaydedilemedi: {e}"));
+            self.log(format!("[{transfer_id}] could not be saved: {e}"));
             return;
         }
         let p = out_path.display().to_string();
         if let Some(t) = self.state.lock().unwrap().transfers_in.get_mut(transfer_id) {
             t.saved_path = Some(p.clone());
         }
-        self.log(format!("[{transfer_id}] tamamlandı -> {p}"));
+        self.log(format!("[{transfer_id}] complete -> {p}"));
         let _ = self.events.send(StationEvent::Transfer {
             id: transfer_id.to_string(),
             dir: TransferDir::In,
@@ -911,7 +913,7 @@ impl<C: Connector> StationShared<C> {
     }
 
     // ------------------------------------------------------------------ //
-    // Bağlantı yönetimi
+    // Connection management
     // ------------------------------------------------------------------ //
     async fn drop_link(&self) {
         self.connected.store(false, Relaxed);
@@ -919,20 +921,20 @@ impl<C: Connector> StationShared<C> {
             tx.close();
         }
         self.log(
-            "!! bağlantı koptu (simüle edildi) - durum korunuyor, /reconnect ile dönebilirsiniz",
+            "!! link dropped (simulated) - state is preserved, you can come back with /reconnect",
         );
         let _ = self.events.send(StationEvent::StateChanged);
     }
 
     async fn reconnect(self: &Arc<Self>) {
         if self.connected.load(Relaxed) {
-            self.log("zaten bağlı");
+            self.log("already connected");
             return;
         }
         let (tx, rx) = match self.connector.connect().await {
             Ok(p) => p,
             Err(e) => {
-                self.log(format!("!! yeniden bağlanılamadı: {e}"));
+                self.log(format!("!! could not reconnect: {e}"));
                 return;
             }
         };
@@ -941,11 +943,11 @@ impl<C: Connector> StationShared<C> {
         self.connected.store(true, Relaxed);
         {
             let mut st = self.state.lock().unwrap();
-            st.role = Role::Listener; // rejoin: aktif beacon duyulursa asla master ilan etme
+            st.role = Role::Listener; // rejoin: never declare master if an active beacon is heard
             st.last_beacon_time = Instant::now();
         }
         self.reconnect_notify.notify_one();
-        self.log("kanala yeniden bağlanıldı");
+        self.log("reconnected to the channel");
         let _ = self.events.send(StationEvent::RoleChanged(Role::Listener));
 
         let this = Arc::clone(self);
@@ -978,7 +980,7 @@ impl<C: Connector> StationShared<C> {
         };
         for (tid, src, missing) in reqs {
             self.log(format!(
-                "[{tid}] geri döndük, {src}'den {} eksik blok isteniyor",
+                "[{tid}] we are back, requesting {} missing blocks from {src}",
                 missing.len()
             ));
             let this = Arc::clone(self);
@@ -1049,11 +1051,11 @@ impl<C: Connector> StationShared<C> {
 }
 
 // ------------------------------------------------------------------ //
-// Genel handle
+// Public handle
 // ------------------------------------------------------------------ //
 
-/// Bir NET istasyonu. `start` bağlanır ve arka plan görevlerini başlatır;
-/// bırakıldığında görevler iptal edilir.
+/// A NET station. `start` connects and starts the background tasks; when it is
+/// dropped the tasks are aborted.
 pub struct Station<C: Connector> {
     shared: Arc<StationShared<C>>,
     tasks: Vec<JoinHandle<()>>,
@@ -1099,8 +1101,8 @@ impl<C: Connector> Station<C> {
             tokio::spawn(StationShared::beacon_loop(Arc::clone(&shared))),
         ];
 
-        // İlk JOIN_REQUEST — receive_loop'un ilk turu çalışsın diye kısa gecikme
-        // (CLAUDE.md: aksi halde ilk TX_GRANTED kaçırılır).
+        // The first JOIN_REQUEST — a short delay so receive_loop's first turn
+        // runs (CLAUDE.md: otherwise the first TX_GRANTED is missed).
         let s = Arc::clone(&shared);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_millis(50)).await;
@@ -1137,7 +1139,7 @@ impl<C: Connector> Station<C> {
         self.shared.chat(text, dst).await
     }
 
-    /// Dosya/görüntü gönder (arka planda çalışır).
+    /// Send a file/image (runs in the background).
     pub fn send_file(&self, path: impl Into<PathBuf>, dst: &str) {
         let s = Arc::clone(&self.shared);
         let path = path.into();
@@ -1153,7 +1155,7 @@ impl<C: Connector> Station<C> {
         s.reconnect().await
     }
 
-    // -- ateşle-unut sürümler (GUI komut döngüsünü bloklamamak için) --------
+    // -- fire-and-forget variants (so the GUI command loop is not blocked) --
 
     pub fn chat_bg(&self, text: &str, dst: &str) {
         let s = Arc::clone(&self.shared);

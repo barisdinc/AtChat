@@ -1,18 +1,17 @@
 """
-channel_server.py - "Kanal fiziği" simülatörü (GERÇEK SES SİNYALİ sürümü).
+channel_server.py - The "channel physics" simulator (REAL AUDIO SIGNAL version).
 
-Önceki sürüm soyut bir "airtime formülü + olasılıksal paket kaybı"
-kullanıyordu. Bu sürüm artık istemcilerin GERÇEKTEN modüle ettiği (bkz.
-modem.py) ham ses örneklerini taşıyor ve üzerine GERÇEK kanal bozulmaları
-uygulayabiliyor: AWGN gürültü (--snr) ve çoklu-yol yankısı (--multipath-*).
-Aktarım süresi artık bir formülden değil, doğrudan örnek sayısından
-(n_samples / SAMPLE_RATE) hesaplanıyor - çünkü artık gerçek bir sinyal var.
+The previous version used an abstract "airtime formula + probabilistic packet
+loss". This version now carries the raw audio samples the clients ACTUALLY
+modulate (see modem.py) and can apply REAL channel impairments on top: AWGN
+noise (--snr) and multipath echo (--multipath-*). The transmission duration is
+no longer from a formula but straight from the sample count
+(n_samples / SAMPLE_RATE) - because there is now a real signal.
 
-Protokol mantığının (master seçimi, ARQ, sohbet vb.) HİÇBİRİ burada YOK -
-hepsi client.py'de. channel_server.py sadece: (1) yarı çift yönlü erişimi
-zorunlu kılar, (2) sesi olduğu gibi (ya da bozularak) tüm istasyonlara
-yayınlar. Gerçek bir SDR/telsize geçerken değişmesi gereken kısım büyük
-ölçüde burasıdır.
+NONE of the protocol logic (master election, ARQ, chat, etc.) is here - it is
+all in client.py. channel_server.py only: (1) enforces half-duplex access,
+(2) broadcasts the audio as-is (or distorted) to every station. This is
+largely the part that would need to change when moving to a real SDR/radio.
 """
 import asyncio
 import argparse
@@ -35,7 +34,7 @@ class ChannelServer:
         self.multipath_gain = multipath_gain
 
     def log(self, msg):
-        print(f"[KANAL {time.strftime('%H:%M:%S')}] {msg}")
+        print(f"[CHAN {time.strftime('%H:%M:%S')}] {msg}")
 
     async def handle_client(self, reader, writer):
         callsign = None
@@ -46,7 +45,7 @@ class ChannelServer:
                 return
             callsign = hello["callsign"]
             self.clients[callsign] = writer
-            self.log(f"{callsign} bağlandı ({len(self.clients)} istasyon aktif)")
+            self.log(f"{callsign} joined ({len(self.clients)} active)")
 
             while True:
                 msg = await read_json(reader)
@@ -59,7 +58,7 @@ class ChannelServer:
         finally:
             if callsign and self.clients.get(callsign) is writer:
                 del self.clients[callsign]
-                self.log(f"{callsign} bağlantısı koptu ({len(self.clients)} istasyon aktif)")
+                self.log(f"{callsign} left ({len(self.clients)} active)")
             try:
                 writer.close()
             except Exception:
@@ -84,7 +83,7 @@ class ChannelServer:
             duration = n / SAMPLE_RATE
             self.busy_until = now + duration
 
-        self.log(f"{src:8s} -> ALL      | ses | {n:6d} örnek | süre={duration:.2f}sn")
+        self.log(f"{src:8s} -> ALL      | audio | {n:6d} samples | {duration:.2f}s")
 
         writer = self.clients.get(src)
         if writer:
@@ -108,8 +107,9 @@ class ChannelServer:
             self.clients.pop(c, None)
 
     def _apply_channel(self, samples: np.ndarray) -> np.ndarray:
-        """GERÇEK kanal bozulmalarını sese uygular: çoklu-yol yankısı ve/veya
-        AWGN gürültü. Hiçbiri ayarlanmadıysa sinyal olduğu gibi geçer."""
+        """Applies the REAL channel impairments to the audio: multipath echo
+        and/or AWGN noise. If none are configured the signal passes through
+        unchanged."""
         x = samples.astype(float)
 
         if self.multipath_gain > 0 and self.multipath_delay > 0:
@@ -129,20 +129,20 @@ class ChannelServer:
 
 
 async def main():
-    ap = argparse.ArgumentParser(description="NET kanal simülatörü (gerçek ses sürümü)")
+    ap = argparse.ArgumentParser(description="NET channel simulator (real-audio version)")
     ap.add_argument("--port", type=int, default=6000)
     ap.add_argument("--snr", type=float, default=None,
-                     help="AWGN gürültü seviyesi (dB). Verilmezse gürültü eklenmez.")
+                     help="AWGN level (dB). If omitted, no noise is added.")
     ap.add_argument("--multipath-delay-ms", type=float, default=0.0,
-                     help="çoklu-yol yankısının gecikmesi (ms). Koruma aralığı 8ms.")
+                     help="multipath echo delay (ms). The guard interval is 8 ms.")
     ap.add_argument("--multipath-gain", type=float, default=0.0,
-                     help="yankının doğrudan sinyale göre kazancı (0-1 arası, ör. 0.3)")
+                     help="echo gain relative to the direct signal (0-1, e.g. 0.3)")
     args = ap.parse_args()
 
     server = ChannelServer(snr_db=args.snr, multipath_delay_ms=args.multipath_delay_ms,
                             multipath_gain=args.multipath_gain)
     srv = await asyncio.start_server(server.handle_client, "127.0.0.1", args.port)
-    server.log(f"dinleniyor: 127.0.0.1:{args.port}  "
+    server.log(f"listening on: 127.0.0.1:{args.port}  "
                f"(snr={args.snr}, multipath={args.multipath_delay_ms}ms@{args.multipath_gain})")
     async with srv:
         await srv.serve_forever()

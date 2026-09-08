@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Python `modem.py` ile çapraz-doğrulama vektörleri üretir.
+Generates cross-validation vectors with the Python `modem.py`.
 
-Her vektör: bir payload'ın `modem.modulate(payload, mode)` çıktısı, ham
-int16 little-endian olarak `rust/crates/modem/tests/vectors/<ad>.i16`
-dosyasına yazılır. `manifest.json` her vektörün mod ve payload'ını (hex)
-tutar. Rust tarafındaki `tests/cross_vectors.rs` bu dosyaları demodüle
-edip payload'ın bit-birebir eşleştiğini doğrular.
+Each vector: the output of `modem.modulate(payload, mode)` for a payload,
+written as raw int16 little-endian to
+`rust/crates/modem/tests/vectors/<name>.i16`. `manifest.json` holds each
+vector's mode and payload (hex). The Rust-side `tests/cross_vectors.rs`
+demodulates these files and verifies the payload matches bit-for-bit.
 
-Kullanım:
+Usage:
     python3 rust/tools/dump_vectors.py
 """
 import json
@@ -66,7 +66,7 @@ def main():
 
     with open(os.path.join(OUT_DIR, "manifest.json"), "w") as f:
         json.dump(manifest, f, indent=2)
-    print(f"\n{len(manifest)} vektor -> {OUT_DIR}")
+    print(f"\n{len(manifest)} vectors -> {OUT_DIR}")
 
 
 if __name__ == "__main__":

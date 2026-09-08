@@ -1,8 +1,8 @@
-//! NET istasyon protokol mantığı (`client.py` portu).
+//! The NET station protocol logic (a port of `client.py`).
 //!
-//! Kasıtlı katman ayrımı: burada protokol MANTIĞI var (master seçimi, roster,
-//! sohbet, blok+CRC+ARQ ile transfer, drop/reconnect); kanal FİZİĞİ `channel`
-//! crate'inde, MODÜLASYON `modem` crate'inde.
+//! Deliberate layering: the protocol LOGIC lives here (master election,
+//! roster, chat, block-CRC-ARQ transfer, drop/reconnect); the channel PHYSICS
+//! is in the `channel` crate, the MODULATION in the `modem` crate.
 
 mod station;
 mod types;

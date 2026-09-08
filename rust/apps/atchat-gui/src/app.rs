@@ -1,4 +1,4 @@
-//! eframe uygulaması: Kanal | İstasyonlar | Monitör sekmeleri.
+//! The eframe app: Channel | Stations | Monitor tabs.
 
 use std::sync::{Arc, Mutex};
 
@@ -22,15 +22,15 @@ pub enum Tab {
 impl Tab {
     fn label(self) -> &'static str {
         match self {
-            Tab::Channel => "Kanal",
-            Tab::Stations => "İstasyonlar",
+            Tab::Channel => "Channel",
+            Tab::Stations => "Stations",
             Tab::Net => "NET",
-            Tab::Monitor => "Monitör",
+            Tab::Monitor => "Monitor",
         }
     }
 }
 
-/// Hangi ikilinin hangi sekmeleri göstereceğini belirler.
+/// Decides which binary shows which tabs.
 pub struct AppConfig {
     pub title: String,
     pub tabs: Vec<Tab>,
@@ -53,7 +53,7 @@ pub struct AtchatApp {
     wf_floor: f32,
     wf_ceil: f32,
     scope_ms: f32,
-    /// true -> spektrum + waterfall yalnız 0–2.76 kHz (veri bandı) gösterir.
+    /// true -> the spectrum + waterfall show only 0–2.76 kHz (the data band).
     freq_zoom: bool,
 
     // --- audio ---
@@ -144,7 +144,7 @@ impl AtchatApp {
             }));
     }
 
-    /// Görüntülenen üst frekans (Hz). Tam bant 4 kHz (Nyquist @ 8 kHz).
+    /// The top displayed frequency (Hz). The full band is 4 kHz (Nyquist @ 8 kHz).
     fn view_hz(&self) -> f32 {
         if self.freq_zoom {
             2760.0
@@ -153,7 +153,7 @@ impl AtchatApp {
         }
     }
 
-    /// `view_hz`'e karşılık gelen bin sayısı (1..n_bins).
+    /// The bin count corresponding to `view_hz` (1..n_bins).
     fn view_bins(&self) -> usize {
         let n = self.spectrum.n_bins().max(1);
         ((self.view_hz() / 4000.0) * n as f32)
@@ -194,13 +194,13 @@ impl eframe::App for AtchatApp {
                     if let Some(ch) = &snap.channel {
                         let (txt, col) = match &ch.current_tx {
                             Some(s) => (
-                                format!("MEŞGUL — {s} ({:.1}sn)", ch.busy_remaining),
+                                format!("BUSY — {s} ({:.1}s)", ch.busy_remaining),
                                 Color32::from_rgb(230, 150, 60),
                             ),
-                            None => ("kanal boş".to_string(), Color32::from_rgb(120, 190, 120)),
+                            None => ("channel idle".to_string(), Color32::from_rgb(120, 190, 120)),
                         };
                         ui.colored_label(col, txt);
-                        ui.label(format!("{} istasyon", ch.active_clients));
+                        ui.label(format!("{} stations", ch.active_clients));
                     } else if let Some(addr) = &snap.link_addr {
                         ui.weak(format!("↔ {addr}"));
                     }
@@ -220,11 +220,11 @@ impl eframe::App for AtchatApp {
 }
 
 // ------------------------------------------------------------------ //
-// Kanal sekmesi
+// Channel tab
 // ------------------------------------------------------------------ //
 impl AtchatApp {
     fn ui_channel(&mut self, ui: &mut egui::Ui, snap: &EngineSnapshot) {
-        ui.heading("Kanal fiziği");
+        ui.heading("Channel physics");
         ui.add_space(4.0);
 
         let mut changed = false;
@@ -232,9 +232,9 @@ impl AtchatApp {
             .num_columns(2)
             .spacing([12.0, 8.0])
             .show(ui, |ui| {
-                ui.label("AWGN gürültü");
+                ui.label("AWGN noise");
                 ui.horizontal(|ui| {
-                    changed |= ui.checkbox(&mut self.snr_on, "aç").changed();
+                    changed |= ui.checkbox(&mut self.snr_on, "on").changed();
                     ui.add_enabled(
                         self.snr_on,
                         egui::Slider::new(&mut self.snr_db, 6.0..=30.0).suffix(" dB"),
@@ -244,16 +244,16 @@ impl AtchatApp {
                 });
                 ui.end_row();
 
-                ui.label("Multipath gecikme");
+                ui.label("Multipath delay");
                 changed |= ui
                     .add(
                         egui::Slider::new(&mut self.mp_delay, 0.0..=20.0)
-                            .suffix(" ms  (koruma aralığı 8 ms)"),
+                            .suffix(" ms  (guard interval 8 ms)"),
                     )
                     .changed();
                 ui.end_row();
 
-                ui.label("Multipath kazanç");
+                ui.label("Multipath gain");
                 changed |= ui
                     .add(egui::Slider::new(&mut self.mp_gain, 0.0..=0.6))
                     .changed();
@@ -262,8 +262,8 @@ impl AtchatApp {
 
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label("Ön ayar:");
-            if ui.button("Temiz").clicked() {
+            ui.label("Preset:");
+            if ui.button("Clean").clicked() {
                 self.snr_on = false;
                 self.mp_delay = 0.0;
                 self.mp_gain = 0.0;
@@ -276,7 +276,7 @@ impl AtchatApp {
                 self.mp_gain = 0.0;
                 changed = true;
             }
-            if ui.button("Multipath sınırı (15 ms)").clicked() {
+            if ui.button("Multipath limit (15 ms)").clicked() {
                 self.snr_on = false;
                 self.mp_delay = 15.0;
                 self.mp_gain = 0.25;
@@ -290,26 +290,26 @@ impl AtchatApp {
         ui.separator();
         if let Some(ch) = &snap.channel {
             ui.label(format!(
-                "Durum: {}   |   aktif istasyon: {}",
+                "State: {}   |   active stations: {}",
                 if ch.busy {
                     format!(
-                        "MEŞGUL ({}, {:.2}sn kaldı)",
+                        "BUSY ({}, {:.2}s left)",
                         ch.current_tx.clone().unwrap_or_default(),
                         ch.busy_remaining
                     )
                 } else {
-                    "boş".into()
+                    "idle".into()
                 },
                 ch.active_clients
             ));
         }
 
         ui.add_space(4.0);
-        ui.label("Havadaki sinyal (scope):");
+        ui.label("On-air signal (scope):");
         self.draw_scope(ui);
 
         ui.add_space(4.0);
-        ui.label("Olay günlüğü:");
+        ui.label("Event log:");
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
             .max_height(220.0)
@@ -322,7 +322,7 @@ impl AtchatApp {
 }
 
 // ------------------------------------------------------------------ //
-// İstasyonlar sekmesi
+// Stations tab
 // ------------------------------------------------------------------ //
 impl AtchatApp {
     fn ui_stations(&mut self, ui: &mut egui::Ui, snap: &EngineSnapshot) {
@@ -330,7 +330,7 @@ impl AtchatApp {
             .resizable(false)
             .default_width(180.0)
             .show_inside(ui, |ui| {
-                ui.heading("İstasyonlar");
+                ui.heading("Stations");
                 ui.separator();
                 let mut remove: Option<String> = None;
                 for sv in &snap.stations {
@@ -340,7 +340,7 @@ impl AtchatApp {
                         if ui.selectable_label(sel, label).clicked() {
                             self.sel_station = Some(sv.snap.callsign.clone());
                         }
-                        if ui.small_button("✕").on_hover_text("kaldır").clicked() {
+                        if ui.small_button("✕").on_hover_text("remove").clicked() {
                             remove = Some(sv.snap.callsign.clone());
                         }
                     });
@@ -354,7 +354,7 @@ impl AtchatApp {
                     }
                 }
                 ui.separator();
-                ui.label("Yeni istasyon:");
+                ui.label("New station:");
                 ui.text_edit_singleline(&mut self.new_call);
                 egui::ComboBox::from_id_salt("newmode")
                     .selected_text(self.new_mode.as_str())
@@ -362,7 +362,7 @@ impl AtchatApp {
                         ui.selectable_value(&mut self.new_mode, netproto::Mode::Qpsk, "QPSK");
                         ui.selectable_value(&mut self.new_mode, netproto::Mode::Bpsk, "BPSK");
                     });
-                if ui.button("＋ Ekle").clicked() && !self.new_call.trim().is_empty() {
+                if ui.button("＋ Add").clicked() && !self.new_call.trim().is_empty() {
                     self.engine.send(EngineCmd::AddStation {
                         callsign: self.new_call.trim().to_uppercase(),
                         mode: self.new_mode,
@@ -372,7 +372,7 @@ impl AtchatApp {
             });
 
         let Some(call) = self.sel_station.clone() else {
-            ui.centered_and_justified(|ui| ui.label("Soldan bir istasyon seç ya da ekle."));
+            ui.centered_and_justified(|ui| ui.label("Select a station on the left, or add one."));
             return;
         };
         let Some(sv) = snap.stations.iter().find(|s| s.snap.callsign == call) else {
@@ -393,15 +393,15 @@ impl AtchatApp {
                 "master={}  backup={}  {}",
                 s.master.clone().unwrap_or_else(|| "-".into()),
                 s.backup.clone().unwrap_or_else(|| "-".into()),
-                if s.connected { "bağlı" } else { "KOPUK" },
+                if s.connected { "connected" } else { "DOWN" },
             ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.button("Yeniden bağlan").clicked() {
+                if ui.button("Reconnect").clicked() {
                     self.engine.send(EngineCmd::Reconnect {
                         callsign: call.clone(),
                     });
                 }
-                if ui.button("Kopar").clicked() {
+                if ui.button("Drop").clicked() {
                     self.engine.send(EngineCmd::Drop {
                         callsign: call.clone(),
                     });
@@ -411,7 +411,7 @@ impl AtchatApp {
 
         ui.separator();
         ui.columns(2, |cols| {
-            // sol: roster + transferler
+            // left: roster + transfers
             cols[0].label(egui::RichText::new("Roster").strong());
             egui::Grid::new("roster")
                 .striped(true)
@@ -420,19 +420,19 @@ impl AtchatApp {
                         ui.label(c);
                         let (col, t) = match st {
                             protocol::RosterStatus::Active => {
-                                (Color32::from_rgb(120, 190, 120), "aktif")
+                                (Color32::from_rgb(120, 190, 120), "active")
                             }
                             protocol::RosterStatus::Lost => {
-                                (Color32::from_rgb(220, 120, 120), "kayıp")
+                                (Color32::from_rgb(220, 120, 120), "lost")
                             }
                         };
                         ui.colored_label(col, t);
-                        ui.label(format!("{age:.0}sn önce"));
+                        ui.label(format!("{age:.0}s ago"));
                         ui.end_row();
                     }
                 });
             cols[0].add_space(8.0);
-            cols[0].label(egui::RichText::new("Transferler").strong());
+            cols[0].label(egui::RichText::new("Transfers").strong());
             for t in s.transfers_out.iter() {
                 let frac = if t.total > 0 {
                     t.have as f32 / t.total as f32
@@ -468,9 +468,9 @@ impl AtchatApp {
                 )));
             }
             if s.transfers_in.is_empty() && s.transfers_out.is_empty() {
-                cols[0].weak("(transfer yok)");
+                cols[0].weak("(no transfers)");
             }
-            if cols[0].button("Dosya/görüntü gönder…").clicked() {
+            if cols[0].button("Send file/image…").clicked() {
                 if let Some(path) = rfd::FileDialog::new().pick_file() {
                     self.engine.send(EngineCmd::SendFile {
                         callsign: call.clone(),
@@ -480,15 +480,15 @@ impl AtchatApp {
                 }
             }
 
-            // sağ: sohbet + log
-            cols[1].label(egui::RichText::new("Sohbet").strong());
+            // right: chat + log
+            cols[1].label(egui::RichText::new("Chat").strong());
             egui::ScrollArea::vertical()
                 .id_salt("chat")
                 .stick_to_bottom(true)
                 .max_height(220.0)
                 .show(&mut cols[1], |ui| {
                     for line in &sv.chat {
-                        let tag = if line.private { "özel" } else { "herkese" };
+                        let tag = if line.private { "private" } else { "all" };
                         let col = if line.own {
                             Color32::from_rgb(140, 180, 240)
                         } else {
@@ -507,7 +507,7 @@ impl AtchatApp {
                         }
                     });
                 let resp = ui.text_edit_singleline(&mut self.chat_input);
-                let send = ui.button("Gönder").clicked()
+                let send = ui.button("Send").clicked()
                     || (resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
                 if send && !self.chat_input.trim().is_empty() {
                     self.engine.send(EngineCmd::Chat {
@@ -519,7 +519,7 @@ impl AtchatApp {
                 }
             });
             cols[1].add_space(6.0);
-            cols[1].label(egui::RichText::new("Günlük").strong());
+            cols[1].label(egui::RichText::new("Log").strong());
             egui::ScrollArea::vertical()
                 .id_salt("stlog")
                 .stick_to_bottom(true)
@@ -534,7 +534,7 @@ impl AtchatApp {
 }
 
 // ------------------------------------------------------------------ //
-// NET sekmesi — tüm istasyonları tek yerden yönet
+// NET tab — manage every station from one place
 // ------------------------------------------------------------------ //
 impl AtchatApp {
     fn ui_net(&mut self, ui: &mut egui::Ui, snap: &EngineSnapshot) {
@@ -545,7 +545,7 @@ impl AtchatApp {
             .collect();
         if calls.is_empty() {
             ui.centered_and_justified(|ui| {
-                ui.label("Önce İstasyonlar sekmesinden birkaç istasyon ekle.")
+                ui.label("Add a few stations from the Stations tab first.")
             });
             return;
         }
@@ -556,12 +556,12 @@ impl AtchatApp {
             .chain(calls.clone())
             .collect();
 
-        ui.heading("NET — toplu kontrol");
+        ui.heading("NET — bulk control");
         ui.add_space(4.0);
 
-        // --- toplu sohbet ---
+        // --- bulk chat ---
         ui.group(|ui| {
-            ui.label(egui::RichText::new("Sohbet").strong());
+            ui.label(egui::RichText::new("Chat").strong());
             ui.horizontal(|ui| {
                 egui::ComboBox::from_id_salt("net_from")
                     .selected_text(&self.net_from)
@@ -580,11 +580,11 @@ impl AtchatApp {
                     });
                 let resp = ui.add(
                     egui::TextEdit::singleline(&mut self.net_msg)
-                        .hint_text("mesaj")
+                        .hint_text("message")
                         .desired_width(260.0),
                 );
                 let enter = resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-                if (ui.button("Gönder").clicked() || enter) && !self.net_msg.trim().is_empty() {
+                if (ui.button("Send").clicked() || enter) && !self.net_msg.trim().is_empty() {
                     self.engine.send(EngineCmd::Chat {
                         callsign: self.net_from.clone(),
                         dst: self.net_dst.clone(),
@@ -593,8 +593,8 @@ impl AtchatApp {
                     self.net_msg.clear();
                 }
                 if ui
-                    .button("Tümü konuşsun")
-                    .on_hover_text("Bağlı her istasyon bu mesajı gönderir")
+                    .button("All talk")
+                    .on_hover_text("Every connected station sends this message")
                     .clicked()
                     && !self.net_msg.trim().is_empty()
                 {
@@ -608,14 +608,14 @@ impl AtchatApp {
 
             ui.horizontal(|ui| {
                 let mut auto = snap.auto_chat_on;
-                if ui.checkbox(&mut auto, "Otomatik sohbet").changed() {
+                if ui.checkbox(&mut auto, "Auto-chat").changed() {
                     self.engine.send(EngineCmd::SetAutoChat {
                         enabled: auto,
                         interval_ms: (self.auto_secs * 1000.0) as u64,
                     });
                 }
                 if ui
-                    .add(egui::Slider::new(&mut self.auto_secs, 1.0..=15.0).suffix(" sn"))
+                    .add(egui::Slider::new(&mut self.auto_secs, 1.0..=15.0).suffix(" s"))
                     .changed()
                     && snap.auto_chat_on
                 {
@@ -624,15 +624,15 @@ impl AtchatApp {
                         interval_ms: (self.auto_secs * 1000.0) as u64,
                     });
                 }
-                ui.weak("(rastgele istasyon → ALL; waterfall'ı canlı görmek için)");
+                ui.weak("(a random station → ALL; to see the waterfall live)");
             });
         });
 
-        // --- toplu dosya ---
+        // --- bulk file ---
         ui.group(|ui| {
-            ui.label(egui::RichText::new("Dosya / görüntü").strong());
+            ui.label(egui::RichText::new("File / image").strong());
             ui.horizontal(|ui| {
-                ui.label("hedef:");
+                ui.label("target:");
                 egui::ComboBox::from_id_salt("net_file_dst")
                     .selected_text(&self.net_file_dst)
                     .show_ui(ui, |ui| {
@@ -640,7 +640,7 @@ impl AtchatApp {
                             ui.selectable_value(&mut self.net_file_dst, c.clone(), c);
                         }
                     });
-                if ui.button(format!("{} gönder…", self.net_from)).clicked() {
+                if ui.button(format!("{} send…", self.net_from)).clicked() {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
                         self.engine.send(EngineCmd::SendFile {
                             callsign: self.net_from.clone(),
@@ -650,8 +650,8 @@ impl AtchatApp {
                     }
                 }
                 if ui
-                    .button("Tümü göndersin…")
-                    .on_hover_text("Bağlı her istasyon seçilen dosyayı gönderir")
+                    .button("All send…")
+                    .on_hover_text("Every connected station sends the selected file")
                     .clicked()
                 {
                     if let Some(path) = rfd::FileDialog::new().pick_file() {
@@ -668,7 +668,7 @@ impl AtchatApp {
 
         ui.add_space(4.0);
         ui.columns(2, |cols| {
-            cols[0].label(egui::RichText::new("NET sohbet akışı").strong());
+            cols[0].label(egui::RichText::new("NET chat stream").strong());
             egui::ScrollArea::vertical()
                 .id_salt("net_chat")
                 .stick_to_bottom(true)
@@ -684,7 +684,7 @@ impl AtchatApp {
                     }
                 });
 
-            cols[1].label(egui::RichText::new("Tüm aktif transferler").strong());
+            cols[1].label(egui::RichText::new("All active transfers").strong());
             egui::ScrollArea::vertical()
                 .id_salt("net_xfers")
                 .max_height(360.0)
@@ -731,27 +731,27 @@ impl AtchatApp {
                         }
                     }
                     if !any {
-                        ui.weak("(aktif transfer yok)");
+                        ui.weak("(no active transfers)");
                     }
                 });
         });
     }
 
-    /// Havadan gelen resimler — bilgi satırı + ◀ ▶ ile geçiş.
+    /// Images received over the air — an info line + ◀ ▶ to switch between them.
     fn ui_net_images(&mut self, ui: &mut egui::Ui, snap: &EngineSnapshot) {
         let n = snap.images.len();
         ui.add_space(6.0);
         ui.group(|ui| {
-            ui.label(egui::RichText::new("Resimler").strong());
+            ui.label(egui::RichText::new("Images").strong());
             if n == 0 {
-                ui.weak("(havadan resim gelmedi — bir .png/.jpg gönderilince burada görünür)");
+                ui.weak("(no image received over the air — one appears here once a .png/.jpg is sent)");
                 self.img_tex = None;
                 self.img_key = None;
                 self.prev_img_count = 0;
                 return;
             }
 
-            // Yeni resim geldiyse ve sonunu izliyorsam otomatik ona geç.
+            // If a new image arrived and I am watching the end, jump to it automatically.
             if n > self.prev_img_count && self.img_idx + 1 >= self.prev_img_count.max(1) {
                 self.img_idx = n - 1;
             }
@@ -775,9 +775,9 @@ impl AtchatApp {
                 }
                 ui.separator();
                 let (tag, col) = if img.own {
-                    ("↑ gönderilen", Color32::from_rgb(140, 180, 240))
+                    ("↑ sent", Color32::from_rgb(140, 180, 240))
                 } else {
-                    ("↓ gelen", Color32::from_rgb(140, 210, 150))
+                    ("↓ received", Color32::from_rgb(140, 210, 150))
                 };
                 ui.colored_label(col, tag);
                 ui.label(
@@ -819,7 +819,7 @@ impl AtchatApp {
 }
 
 // ------------------------------------------------------------------ //
-// Monitör sekmesi
+// Monitor tab
 // ------------------------------------------------------------------ //
 impl AtchatApp {
     fn ui_monitor(&mut self, ui: &mut egui::Ui, ctx: &egui::Context, snap: &EngineSnapshot) {
@@ -846,26 +846,26 @@ impl AtchatApp {
                     }
                 });
             if ui
-                .add(egui::Slider::new(&mut self.avg_alpha, 0.0..=0.95).text("ortalama"))
+                .add(egui::Slider::new(&mut self.avg_alpha, 0.0..=0.95).text("average"))
                 .changed()
             {
                 self.spectrum.set_averaging(self.avg_alpha);
             }
-            ui.add(egui::Slider::new(&mut self.wf_floor, -140.0..=-40.0).text("taban dB"));
-            ui.add(egui::Slider::new(&mut self.wf_ceil, -60.0..=0.0).text("tavan dB"));
+            ui.add(egui::Slider::new(&mut self.wf_floor, -140.0..=-40.0).text("floor dB"));
+            ui.add(egui::Slider::new(&mut self.wf_ceil, -60.0..=0.0).text("ceil dB"));
             ui.add(egui::Slider::new(&mut self.scope_ms, 20.0..=1000.0).text("scope ms"));
-            if ui.button("Peak sıfırla").clicked() {
+            if ui.button("Reset peak").clicked() {
                 self.spectrum.reset_peak();
             }
             if ui
-                .checkbox(&mut self.freq_zoom, "Veri bandı zoom")
-                .on_hover_text("Spektrum + waterfall'ı 0–2.76 kHz'e sınırla")
+                .checkbox(&mut self.freq_zoom, "Data-band zoom")
+                .on_hover_text("Limit the spectrum + waterfall to 0–2.76 kHz")
                 .changed()
             {
                 self.waterfall.clear();
             }
 
-            if ui.checkbox(&mut self.audio_on, "Ses").changed() {
+            if ui.checkbox(&mut self.audio_on, "Audio").changed() {
                 if self.audio_on {
                     self.engine
                         .audio_enabled
@@ -879,7 +879,7 @@ impl AtchatApp {
                             self.audio_failed = false;
                         }
                         Err(e) => {
-                            tracing::warn!("ses başlatılamadı: {e}");
+                            tracing::warn!("could not start audio: {e}");
                             self.audio_failed = true;
                             self.audio_on = false;
                             self.engine
@@ -898,23 +898,23 @@ impl AtchatApp {
             if self.audio_on {
                 let mut v = *self.audio_vol.lock().unwrap();
                 if ui
-                    .add(egui::Slider::new(&mut v, 0.0..=1.0).text("ses"))
+                    .add(egui::Slider::new(&mut v, 0.0..=1.0).text("volume"))
                     .changed()
                 {
                     *self.audio_vol.lock().unwrap() = v;
                 }
             }
             if self.audio_failed {
-                ui.colored_label(Color32::from_rgb(220, 120, 120), "ses cihazı yok");
+                ui.colored_label(Color32::from_rgb(220, 120, 120), "no audio device");
             }
         });
 
         ui.separator();
-        ui.label("Scope (zaman domeni)");
+        ui.label("Scope (time domain)");
         self.draw_scope(ui);
         ui.add_space(6.0);
         ui.label(format!(
-            "Spektrum (0–{:.1} kHz, gölge = 312–2688 Hz veri bandı)",
+            "Spectrum (0–{:.1} kHz, shaded = 312–2688 Hz data band)",
             self.view_hz() / 1000.0
         ));
         self.draw_spectrum(ui);
@@ -923,7 +923,7 @@ impl AtchatApp {
         self.draw_waterfall(ui, ctx);
 
         ui.add_space(6.0);
-        ui.label("Çözüm şeridi (pasif monitör):");
+        ui.label("Decode strip (passive monitor):");
         egui::ScrollArea::vertical()
             .id_salt("decodes")
             .stick_to_bottom(true)
@@ -970,14 +970,14 @@ impl AtchatApp {
         }
         let view_hz = self.view_hz();
         let max_bin = self.view_bins().min(n);
-        // veri bandı gölgesi
+        // data-band shading
         let bx = |hz: f32| rect.left() + (hz / view_hz).clamp(0.0, 1.0) * rect.width();
         painter.rect_filled(
             Rect::from_x_y_ranges(bx(312.0)..=bx(2688.0), rect.y_range()),
             0.0,
             Color32::from_rgba_unmultiplied(80, 120, 200, 28),
         );
-        // dikey kılavuz (500 Hz adımlar)
+        // vertical guides (500 Hz steps)
         let mut hz = 500.0_f32;
         while hz < view_hz - 1.0 {
             let x = bx(hz);

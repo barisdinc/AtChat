@@ -1,5 +1,5 @@
-//! AtCHAT egui arayüz kütüphanesi. Dört ikili bunu paylaşır:
-//! `atchat-gui` (hepsi-bir-arada), `atchat-channel`, `atchat-client`,
+//! The AtCHAT egui interface library. Four binaries share it:
+//! `atchat-gui` (all-in-one), `atchat-channel`, `atchat-client`,
 //! `atchat-monitor`.
 
 pub mod app;

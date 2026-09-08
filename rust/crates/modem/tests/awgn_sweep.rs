@@ -1,9 +1,9 @@
-//! AWGN altında modem performans eğrisi — CLAUDE.md'de ölçülen davranışı
-//! yeniden üretir:
-//!   - QPSK: ~18 dB SNR'ye kadar %100, ~10–12 dB'de keskin "uçurum".
-//!   - BPSK: 10 dB'de hâlâ büyük ölçüde çalışır (QPSK ~0 iken).
+//! The modem performance curve under AWGN — reproduces the behaviour measured
+//! in CLAUDE.md:
+//!   - QPSK: 100% down to ~18 dB SNR, a sharp "cliff" at ~10–12 dB.
+//!   - BPSK: still mostly working at 10 dB (while QPSK is ~0).
 //!
-//! Yavaş olduğu için varsayılan olarak `#[ignore]`. Çalıştırmak için:
+//! `#[ignore]` by default because it is slow. To run it:
 //!   cargo test -p modem --test awgn_sweep -- --ignored --nocapture
 
 use modem::{Mode, Modem};
@@ -11,7 +11,7 @@ use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
 use rand_distr::{Distribution, Normal};
 
-/// `channel_server.py::_apply_channel` AWGN kısmının birebir karşılığı.
+/// An exact equivalent of the AWGN part of `channel_server.py::_apply_channel`.
 fn add_awgn(x: &[i16], snr_db: f64, rng: &mut StdRng) -> Vec<i16> {
     let sig_power: f64 =
         (x.iter().map(|&s| (s as f64) * (s as f64)).sum::<f64>() / x.len() as f64).max(1.0);
@@ -41,12 +41,12 @@ fn success_rate(mode: Mode, snr_db: f64, trials: usize, rng: &mut StdRng) -> usi
 }
 
 #[test]
-#[ignore = "yavaş; -- --ignored --nocapture ile çalıştırın"]
+#[ignore = "slow; run with -- --ignored --nocapture"]
 fn awgn_performance_curve() {
     let trials = 20;
     let mut rng = StdRng::seed_from_u64(0x00A7_C4A7);
 
-    println!("\n  SNR(dB) |  QPSK  |  BPSK   (başarı / {trials})");
+    println!("\n  SNR(dB) |  QPSK  |  BPSK   (successes / {trials})");
     println!("  --------+--------+-------");
     let mut results = Vec::new();
     for &snr in &[24.0, 18.0, 16.0, 14.0, 12.0, 10.0] {
@@ -57,14 +57,14 @@ fn awgn_performance_curve() {
     }
 
     let get = |snr: f64| results.iter().find(|(s, _, _)| *s == snr).unwrap();
-    // Temiz uçta QPSK neredeyse kusursuz.
-    assert!(get(24.0).1 >= 18, "QPSK@24dB çok düşük: {:?}", get(24.0));
-    assert!(get(18.0).1 >= 17, "QPSK@18dB çok düşük: {:?}", get(18.0));
-    // Uçurum: 10 dB'de QPSK çöker, BPSK ayakta kalır.
+    // At the clean end QPSK is nearly perfect.
+    assert!(get(24.0).1 >= 18, "QPSK@24dB too low: {:?}", get(24.0));
+    assert!(get(18.0).1 >= 17, "QPSK@18dB too low: {:?}", get(18.0));
+    // The cliff: at 10 dB QPSK collapses, BPSK stays up.
     assert!(
         get(10.0).1 <= 6,
-        "QPSK@10dB uçurum beklenirdi: {:?}",
+        "QPSK@10dB should have hit the cliff: {:?}",
         get(10.0)
     );
-    assert!(get(10.0).2 >= 12, "BPSK@10dB dayanmalıydı: {:?}", get(10.0));
+    assert!(get(10.0).2 >= 12, "BPSK@10dB should have held up: {:?}", get(10.0));
 }

@@ -25,7 +25,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Linux sistem bağımlılıkları (eframe/glow + cpal/ALSA)
+      - name: Linux system dependencies (eframe/glow + cpal/ALSA)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
@@ -56,7 +56,7 @@ jobs:
         run: cargo build --workspace --release
 
   python-interop:
-    name: modem <-> Python çapraz doğrulama
+    name: modem <-> Python cross-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

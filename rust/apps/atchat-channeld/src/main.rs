@@ -1,5 +1,5 @@
-//! Headless TCP kanal sunucusu. `channel_server.py` ile aynı komut satırı
-//! ve aynı tel formatı — Python `client.py` / `monitor.py` doğrudan bağlanır.
+//! A headless TCP channel server. Same command line and same wire format as
+//! `channel_server.py` — the Python `client.py` / `monitor.py` connect directly.
 //!
 //!   atchat-channeld --port 6000
 //!   atchat-channeld --port 6000 --snr 13 --multipath-delay-ms 3 --multipath-gain 0.2
@@ -11,26 +11,26 @@ use clap::Parser;
 use tokio::net::TcpListener;
 
 #[derive(Parser, Debug)]
-#[command(about = "NET kanal simülatörü (gerçek ses sürümü) — Rust portu")]
+#[command(about = "NET channel simulator (real-audio version) — Rust port")]
 struct Args {
     #[arg(long, default_value_t = 6000)]
     port: u16,
 
-    /// AWGN gürültü seviyesi (dB). Verilmezse gürültü eklenmez (temiz kanal).
+    /// AWGN level (dB). If omitted, no noise is added (a clean channel).
     #[arg(long)]
     snr: Option<f64>,
 
-    /// Çoklu-yol yankısının gecikmesi (ms). Koruma aralığı 8 ms.
+    /// Multipath echo delay (ms). The guard interval is 8 ms.
     #[arg(long = "multipath-delay-ms", default_value_t = 0.0)]
     multipath_delay_ms: f64,
 
-    /// Yankının doğrudan sinyale göre kazancı (0–1, ör. 0.3).
+    /// Echo gain relative to the direct signal (0–1, e.g. 0.3).
     #[arg(long = "multipath-gain", default_value_t = 0.0)]
     multipath_gain: f64,
 }
 
 fn now() -> String {
-    // basit HH:MM:SS — chrono bağımlılığı eklememek için.
+    // a simple HH:MM:SS — to avoid pulling in a chrono dependency.
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
@@ -58,7 +58,7 @@ async fn main() -> anyhow::Result<()> {
 
     let listener = TcpListener::bind(("127.0.0.1", args.port)).await?;
     println!(
-        "[KANAL {}] dinleniyor: 127.0.0.1:{}  (snr={:?}, multipath={}ms@{})",
+        "[CHAN {}] listening on 127.0.0.1:{}  (snr={:?}, multipath={}ms@{})",
         now(),
         args.port,
         args.snr,
@@ -81,7 +81,7 @@ async fn main() -> anyhow::Result<()> {
     tokio::select! {
         r = serve => r,
         _ = tokio::signal::ctrl_c() => {
-            println!("\n[KANAL {}] kapatılıyor", now());
+            println!("\n[CHAN {}] shutting down", now());
             Ok(())
         }
     }
@@ -91,24 +91,24 @@ fn log_event(e: &ChannelEvent) {
     let t = now();
     match e {
         ChannelEvent::Joined { callsign, active } => {
-            println!("[KANAL {t}] {callsign} bağlandı ({active} istasyon aktif)")
+            println!("[CHAN {t}] {callsign} joined ({active} active)")
         }
         ChannelEvent::Left { callsign, active } => {
-            println!("[KANAL {t}] {callsign} bağlantısı koptu ({active} istasyon aktif)")
+            println!("[CHAN {t}] {callsign} left ({active} active)")
         }
         ChannelEvent::TxGranted {
             src,
             n_samples,
             duration,
         } => println!(
-            "[KANAL {t}] {src:8} -> ALL      | ses | {n_samples:6} örnek | süre={duration:.2}sn"
+            "[CHAN {t}] {src:8} -> ALL      | audio | {n_samples:6} samples | {duration:.2}s"
         ),
         ChannelEvent::TxDenied { src, retry_after } => {
-            println!("[KANAL {t}] {src:8} -> MEŞGUL   | retry_after={retry_after:.2}sn")
+            println!("[CHAN {t}] {src:8} -> BUSY     | retry_after={retry_after:.2}s")
         }
         ChannelEvent::Decoded { duration, summary } => match summary {
-            Some(s) => println!("[DİNLE {t}] {s} | {duration:.2}sn | çözüldü"),
-            None => println!("[DİNLE {t}] {duration:.2}sn | çözülemedi"),
+            Some(s) => println!("[MON  {t}] {s} | {duration:.2}s | decoded"),
+            None => println!("[MON  {t}] {duration:.2}s | undecoded"),
         },
         ChannelEvent::Delivered { .. } => {}
     }

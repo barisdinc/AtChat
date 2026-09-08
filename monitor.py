@@ -1,24 +1,24 @@
 """
-monitor.py - NET kanalındaki GERÇEK sesi dinleyen pasif bir izleyici.
+monitor.py - A passive listener on the REAL audio of the NET channel.
 
-Önceki sürüm sembolik "sonifikasyon" (uydurma tonlar) çalıyordu. Bu sürüm
-artık channel_server.py'nin gerçekten taşıdığı, istasyonların modem.py ile
-GERÇEKTEN modüle ettiği ses örneklerini olduğu gibi çalar - yani kanalda
-oluşan gürültü/bozulma varsa onu da duyarsınız. Ayrıca (mümkünse) sesi
-kendi demodülatörüyle çözüp kimin ne gönderdiğini metin olarak da loglar;
-çözemezse (düşük SNR, çakışma vb.) bunu da açıkça belirtir - tıpkı gerçek
-bir operatörün "bir şey duydum ama çözemedim" demesi gibi.
+The previous version played a symbolic "sonification" (made-up tones). This
+version now plays the audio samples channel_server.py actually carries, which
+the stations ACTUALLY modulate with modem.py, as-is - so if there is
+noise/distortion on the channel you hear that too. It also (where possible)
+decodes the audio with its own demodulator and logs who sent what as text;
+if it cannot decode (low SNR, a collision, etc.) it says so plainly - just
+like a real operator saying "I heard something but could not read it".
 
-Pasif olduğu için (hiç JOIN_REQUEST/BEACON göndermediği için) diğer
-istasyonların roster'ında GÖRÜNMEZ.
+Because it is passive (it never sends a JOIN_REQUEST/BEACON) it does NOT
+appear in the other stations' rosters.
 
-Bağımlılık: numpy (client.py/channel_server.py zaten gerektiriyor).
-Ses çalma için Linux'ta `aplay`/`paplay`, Mac'te `afplay`, Windows'ta
-`winsound` kullanılır - hiçbiri yoksa sessizce sadece metin günlüğü verir.
+Dependency: numpy (client.py/channel_server.py already require it).
+For audio playback it uses `aplay`/`paplay` on Linux, `afplay` on Mac and
+`winsound` on Windows - if none are present it silently gives just the text log.
 
-Kullanım:
+Usage:
     python3 monitor.py --port 6000
-    python3 monitor.py --port 6000 --quiet     (sessiz, sadece metin günlüğü)
+    python3 monitor.py --port 6000 --quiet     (quiet, text log only)
 """
 import asyncio
 import argparse
@@ -40,7 +40,7 @@ from modem import Modem, SAMPLE_RATE
 
 
 # ------------------------------------------------------------------ #
-# Ses çalma (işletim sistemine göre, ek bağımlılık yok)
+# Audio playback (per operating system, no extra dependency)
 # ------------------------------------------------------------------ #
 _player_checked = False
 _player_cmd = None
@@ -88,8 +88,9 @@ def play_wav_blocking(path):
 
 
 class AudioQueue:
-    """Gelen GERÇEK sesi sırayla çalan işçi thread (kanal zaten yarı çift
-    yönlü olduğu için sıralı çalma gerçek zamanlamayı doğru yansıtır)."""
+    """A worker thread that plays the incoming REAL audio in order (because
+    the channel is already half-duplex, sequential playback reflects the real
+    timing correctly)."""
     def __init__(self):
         self.q = queue.Queue()
         self.warned = False
@@ -109,18 +110,18 @@ class AudioQueue:
             ok = play_wav_blocking(path)
             if not ok and not self.warned:
                 self.warned = True
-                print("[DİNLEYİCİ] Ses çalma komutu bulunamadı (aplay/paplay/afplay/winsound). "
-                      "Sadece metin günlüğü ile devam ediliyor.")
+                print("[MONITOR] No audio playback command found (aplay/paplay/afplay/winsound). "
+                      "Continuing with the text log only.")
 
 
 # ------------------------------------------------------------------ #
-# Ana döngü
+# Main loop
 # ------------------------------------------------------------------ #
 async def monitor_loop(host, port, name, quiet):
     reader, writer = await asyncio.open_connection(host, port)
     await send_json(writer, {"cmd": "HELLO", "callsign": name})
-    print(f"[DİNLEYİCİ {name}] kanala bağlanıldı ({host}:{port}) - sadece dinliyor, "
-          f"hiçbir şey göndermiyor (roster'da görünmeyecek)")
+    print(f"[MONITOR {name}] connected to the channel ({host}:{port}) - listening only, "
+          f"sends nothing (will not appear in the roster)")
 
     modem = Modem()
     audio = None if quiet else AudioQueue()
@@ -128,7 +129,7 @@ async def monitor_loop(host, port, name, quiet):
     while True:
         msg = await read_json(reader)
         if msg is None:
-            print("[DİNLEYİCİ] bağlantı koptu")
+            print("[MONITOR] connection dropped")
             return
         if msg.get("type") != "RX_AUDIO":
             continue
@@ -143,23 +144,23 @@ async def monitor_loop(host, port, name, quiet):
             try:
                 import json
                 frame = json.loads(payload.decode("utf-8"))
-                print(f"[DİNLE {ts}] {frame.get('src','?'):8s} -> {frame.get('dst','ALL'):8s} | "
-                      f"{frame.get('type','?'):12s} | {duration:.2f}sn | çözüldü")
+                print(f"[MON {ts}] {frame.get('src','?'):8s} -> {frame.get('dst','ALL'):8s} | "
+                      f"{frame.get('type','?'):12s} | {duration:.2f}s | decoded")
             except Exception:
-                print(f"[DİNLE {ts}] {duration:.2f}sn | ses çözüldü ama JSON değil (bozuk?)")
+                print(f"[MON {ts}] {duration:.2f}s | audio decoded but not JSON (corrupt?)")
         else:
-            print(f"[DİNLE {ts}] {duration:.2f}sn | çözülemedi (düşük SNR / çakışma / gürültü)")
+            print(f"[MON {ts}] {duration:.2f}s | could not decode (low SNR / collision / noise)")
 
         if audio:
             audio.push(samples)
 
 
 def main():
-    ap = argparse.ArgumentParser(description="NET kanalındaki gerçek sesi dinleyen izleyici")
+    ap = argparse.ArgumentParser(description="A listener on the real audio of the NET channel")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=6000)
-    ap.add_argument("--name", default="DINLEYICI")
-    ap.add_argument("--quiet", action="store_true", help="ses çalma, sadece metin günlüğü")
+    ap.add_argument("--name", default="MONITOR")
+    ap.add_argument("--quiet", action="store_true", help="no audio playback, text log only")
     args = ap.parse_args()
     try:
         asyncio.run(monitor_loop(args.host, args.port, args.name, args.quiet))

@@ -1,4 +1,4 @@
-//! `client.py`'deki veri yapılarının portu + GUI'ye yayınlanan olaylar.
+//! A port of the data structures in `client.py` + the events published to the GUI.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -41,7 +41,7 @@ pub enum TransferDir {
     Out,
 }
 
-/// Bu istasyonun GÖNDERDİĞİ bir bulk transfer.
+/// A bulk transfer this station is SENDING.
 #[derive(Debug, Clone)]
 pub struct TransferOut {
     pub transfer_id: String,
@@ -50,12 +50,12 @@ pub struct TransferOut {
     pub blocks: BTreeMap<usize, Vec<u8>>,
     pub mode: Mode,
     pub arq_round: usize,
-    /// GUI ilerleme çubuğu için gönderilen blok sayacı (ARQ turlarında artar).
+    /// Sent-block counter for the GUI progress bar (grows across ARQ rounds).
     pub sent: usize,
     pub done: bool,
 }
 
-/// Bu istasyonun ALDIĞI bir bulk transfer.
+/// A bulk transfer this station is RECEIVING.
 #[derive(Debug, Clone)]
 pub struct TransferIn {
     pub transfer_id: String,
@@ -84,27 +84,27 @@ pub enum ChatScope {
     Private,
 }
 
-/// GUI'nin dinlediği istasyon olayları. `client.py`'nin `print(...)`
-/// çağrılarının yapılandırılmış karşılığı.
+/// The station events the GUI listens for. The structured equivalent of
+/// `client.py`'s `print(...)` calls.
 #[derive(Debug, Clone)]
 pub enum StationEvent {
-    /// `self.log(msg)` — serbest metin günlük satırı.
+    /// `self.log(msg)` — a free-text log line.
     Log(String),
-    /// Gelen sohbet mesajı.
+    /// An incoming chat message.
     Chat {
         from: String,
         scope: ChatScope,
         text: String,
     },
     RoleChanged(Role),
-    /// Roster ya da transfer tablosu değişti — GUI snapshot'ı yeniden okumalı.
+    /// The roster or transfer table changed — the GUI should re-read the snapshot.
     StateChanged,
-    /// Bir transfer ilerledi ya da tamamlandı.
+    /// A transfer advanced or completed.
     Transfer {
         id: String,
         dir: TransferDir,
         filename: String,
-        /// Karşı istasyon (gelen için kaynak, giden için hedef).
+        /// The other station (the source for an incoming transfer, the destination for an outgoing one).
         peer: String,
         have: usize,
         total: usize,
@@ -113,18 +113,18 @@ pub enum StationEvent {
     },
 }
 
-/// Zamanlama parametreleri. Varsayılanlar `netproto.py` sabitleri (GUI bunu
-/// kullanır — CLAUDE.md'deki "gerçek ~24 sn master seçimi"). Testler kısaltır.
+/// Timing parameters. The defaults are the `netproto.py` constants (the GUI
+/// uses these — the "real ~24 s master election" from CLAUDE.md). Tests shorten them.
 #[derive(Debug, Clone)]
 pub struct StationConfig {
     pub beacon_interval: Duration,
     pub beacon_timeout: Duration,
     pub lost_timeout: Duration,
     pub remove_timeout: Duration,
-    /// `_send_blocks`: her kaç blokta bir kontrol penceresi (CLAUDE.md hata #3).
+    /// `_send_blocks`: a control window every N blocks (CLAUDE.md bug #3).
     pub control_window_every: usize,
     pub control_window_pause: Duration,
-    /// Alınan dosyaların yazılacağı dizin (`client.py`: "received").
+    /// The directory received files are written to (`client.py`: "received").
     pub received_dir: PathBuf,
 }
 
@@ -142,7 +142,7 @@ impl Default for StationConfig {
     }
 }
 
-/// GUI'nin her karede okuduğu anlık istasyon durumu.
+/// The station snapshot the GUI reads every frame.
 #[derive(Debug, Clone)]
 pub struct StationSnapshot {
     pub callsign: String,
@@ -150,7 +150,7 @@ pub struct StationSnapshot {
     pub master: Option<String>,
     pub backup: Option<String>,
     pub connected: bool,
-    pub roster: Vec<(String, RosterStatus, f64)>, // (çağrı, durum, son görülme sn önce)
+    pub roster: Vec<(String, RosterStatus, f64)>, // (callsign, status, seconds since last seen)
     pub transfers_in: Vec<TransferSnapshot>,
     pub transfers_out: Vec<TransferSnapshot>,
 }

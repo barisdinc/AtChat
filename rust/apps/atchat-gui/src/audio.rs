@@ -1,5 +1,6 @@
-//! cpal ile monitör sesini hoparlöre verir. 8 kHz -> cihaz örnekleme hızına
-//! basit (en yakın komşu) yeniden örnekleme. Cihaz yoksa sessizce başarısız.
+//! Plays the monitor audio to the speakers with cpal. Simple (nearest-
+//! neighbour) resampling from 8 kHz to the device sample rate. Fails silently
+//! if there is no device.
 
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -11,19 +12,19 @@ pub struct AudioOut {
 }
 
 impl AudioOut {
-    /// `ring`: motorun doldurduğu 8 kHz i16 örnek halkası.
-    /// `volume`: 0..1 (paylaşımlı, canlı ayarlanır).
+    /// `ring`: the 8 kHz i16 sample ring the engine fills.
+    /// `volume`: 0..1 (shared, adjusted live).
     pub fn start(ring: Arc<Mutex<VecDeque<i16>>>, volume: Arc<Mutex<f32>>) -> anyhow::Result<Self> {
         let host = cpal::default_host();
         let device = host
             .default_output_device()
-            .ok_or_else(|| anyhow::anyhow!("çıkış cihazı bulunamadı"))?;
+            .ok_or_else(|| anyhow::anyhow!("no output device found"))?;
         let cfg = device.default_output_config()?;
         let sample_rate = cfg.sample_rate().0 as f32;
         let channels = cfg.channels() as usize;
-        let step = 8000.0 / sample_rate; // çıkış örneği başına kaç kaynak örneği
+        let step = 8000.0 / sample_rate; // source samples per output sample
 
-        let err_fn = |e| tracing::warn!("cpal akış hatası: {e}");
+        let err_fn = |e| tracing::warn!("cpal stream error: {e}");
 
         let stream = match cfg.sample_format() {
             cpal::SampleFormat::F32 => {
@@ -38,7 +39,7 @@ impl AudioOut {
                 let cb = make_callback::<u16>(ring, volume, channels, step);
                 device.build_output_stream(&cfg.into(), cb, err_fn, None)?
             }
-            other => anyhow::bail!("desteklenmeyen örnek formatı: {other:?}"),
+            other => anyhow::bail!("unsupported sample format: {other:?}"),
         };
         stream.play()?;
         Ok(Self { _stream: stream })

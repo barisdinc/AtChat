@@ -1,6 +1,6 @@
-//! Monitör görselleştirme DSP'si — GUI çatısından bağımsız, saf veri üretir
-//! (`Vec<(f32,f32)>` zarf, `Vec<f32>` dB spektrum, `Vec<u8>` RGB waterfall).
-//! Faz 5'te `atchat-gui` bunları egui doku/şekillerine çevirir.
+//! Monitor-visualisation DSP — independent of any GUI framework, it produces
+//! pure data (`Vec<(f32,f32)>` envelope, `Vec<f32>` dB spectrum, `Vec<u8>` RGB
+//! waterfall). In phase 5 `atchat-gui` turns these into egui textures/shapes.
 
 mod colormap;
 mod scope;

@@ -1,6 +1,6 @@
-//! Rust modülatör çıktılarını diske yazar; `rust/tools/check_vectors.py`
-//! bunları Python `modem.py` ile demodüle edip bit-birebir eşleşmeyi
-//! doğrular (ters yön çapraz-doğrulama).
+//! Writes the Rust modulator's outputs to disk; `rust/tools/check_vectors.py`
+//! demodulates them with the Python `modem.py` and verifies a bit-for-bit
+//! match (the reverse-direction cross-check).
 //!
 //!   cargo run -p modem --example emit_vectors
 //!   python3 rust/tools/check_vectors.py

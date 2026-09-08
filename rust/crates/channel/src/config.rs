@@ -1,22 +1,22 @@
-//! `channel_server.py::_apply_channel` portu — kanal bozulmaları.
+//! A port of `channel_server.py::_apply_channel` — channel impairments.
 
 use rand::Rng;
 use rand_distr::{Distribution, Normal};
 
 pub const SAMPLE_RATE: u32 = netproto::SAMPLE_RATE;
 
-/// Kanal bozulma ayarları (`channel_server.py` argümanlarıyla birebir).
+/// Channel impairment settings (matching the `channel_server.py` arguments).
 #[derive(Debug, Clone)]
 pub struct ChannelConfig {
-    /// AWGN gürültü seviyesi (dB). `None` -> gürültü eklenmez (temiz kanal).
+    /// AWGN level (dB). `None` -> no noise added (a clean channel).
     pub snr_db: Option<f64>,
-    /// Çoklu-yol yankısının gecikmesi (ms). Koruma aralığı 8 ms.
+    /// Multipath echo delay (ms). The guard interval is 8 ms.
     pub multipath_delay_ms: f64,
-    /// Yankının doğrudan sinyale göre kazancı (0–1).
+    /// Echo gain relative to the direct signal (0–1).
     pub multipath_gain: f64,
-    /// TEST hook'u: 1-indeksli teslim edilen burst numaraları — listedekiler
-    /// sıfırlanır (demod kesin başarısız olur). ARQ'yu deterministik tetiklemek
-    /// için. Boş -> devre dışı.
+    /// TEST hook: 1-indexed delivered burst numbers — the ones in the list
+    /// are zeroed (demod is guaranteed to fail). For triggering ARQ
+    /// deterministically. Empty -> disabled.
     pub corrupt_burst_nums: Vec<u64>,
 }
 
@@ -38,11 +38,12 @@ impl ChannelConfig {
     }
 }
 
-/// GERÇEK kanal bozulmalarını uygular: önce çoklu-yol yankısı, sonra AWGN,
-/// sonra i16'ya kırpma. Hiçbiri ayarlanmadıysa sinyal olduğu gibi geçer.
+/// Applies the REAL channel impairments: multipath echo first, then AWGN,
+/// then clamping to i16. If none are configured the signal passes through
+/// unchanged.
 ///
-/// `channel_server.py::_apply_channel` ile birebir sıralama: gürültü gücü,
-/// yankı EKLENDİKTEN sonraki sinyale göre hesaplanır.
+/// The ordering matches `channel_server.py::_apply_channel` exactly: the noise
+/// power is computed against the signal AFTER the echo has been added.
 pub fn apply_channel<R: Rng + ?Sized>(
     samples: &[i16],
     cfg: &ChannelConfig,
@@ -52,7 +53,7 @@ pub fn apply_channel<R: Rng + ?Sized>(
 
     let d = cfg.multipath_delay_samples();
     if cfg.multipath_gain > 0.0 && d > 0 && d < x.len() {
-        // echo = x'in d örnek geciktirilmiş kopyası (baş taraf sıfır).
+        // echo = a copy of x delayed by d samples (the front is zero).
         let echo: Vec<f64> = std::iter::repeat(0.0)
             .take(d)
             .chain(x[..x.len() - d].iter().copied())
@@ -64,7 +65,7 @@ pub fn apply_channel<R: Rng + ?Sized>(
 
     if let Some(snr_db) = cfg.snr_db {
         let mean_sq = x.iter().map(|v| v * v).sum::<f64>() / x.len().max(1) as f64;
-        // Python: `np.mean(x**2) or 1.0` -> yalnız TAM 0.0 ise 1.0'a düşer.
+        // Python: `np.mean(x**2) or 1.0` -> falls back to 1.0 only if it is EXACTLY 0.0.
         let sig_power = if mean_sq == 0.0 { 1.0 } else { mean_sq };
         let noise_power = sig_power / 10f64.powf(snr_db / 10.0);
         let normal = Normal::new(0.0, noise_power.sqrt()).expect("std >= 0");
@@ -116,7 +117,7 @@ mod tests {
         let measured_snr = 10.0 * (sig_power / err_power).log10();
         assert!(
             (measured_snr - 15.0).abs() < 2.0,
-            "ölçülen SNR {measured_snr:.1} dB, ~15 bekleniyordu"
+            "measured SNR {measured_snr:.1} dB, expected ~15"
         );
     }
 

@@ -1,355 +1,343 @@
-# CLAUDE.md — Telsiz NET Protokolü Simülasyonu
+# CLAUDE.md — Radio NET Protocol Simulation
 
-Bu dosya, bu projeye başka bir oturumda devam ederken bağlamı yeniden
-anlatmak zorunda kalmamak için hazırlandı. Claude bu dosyayı okuyunca
-projenin tamamını, alınan kararları, bulunan hataları ve mevcut durumu
-bilmiş olmalı.
+This file exists so that context does not have to be re-explained when
+continuing this project in another session. After reading it, Claude should
+know the whole project, the decisions made, the bugs found and the current
+state.
 
-## Projenin amacı
+## Project goal
 
-Amatör telsiz üzerinden çalışacak, SSTV kadar basit ama daha dayanıklı,
-KGSTV/EasyPal/HSModem'den ilham alan, 2.7 kHz SSB bant genişliğinde
-çalışan; görüntü/dosya transferi + hata düzeltme (ARQ) + çok istasyonlu
-sohbet (NET) yapabilen bir dijital mod **tasarlandı ve yazılımla
-simüle edildi**. Henüz gerçek SDR/telsiz donanımına bağlanmadı (bu,
-en sondaki "Sonraki adımlar" bölümünde tarif ediliyor).
+A digital mode that would run over amateur radio — as simple as SSTV but more
+robust, inspired by KGSTV/EasyPal/HSModem, operating in a 2.7 kHz SSB
+bandwidth; capable of image/file transfer + error correction (ARQ) +
+multi-station chat (NET) — was **designed and simulated in software**. It is
+not yet connected to real SDR/radio hardware (that is described in the "Next
+steps" section at the end).
 
-Konuşma şu sırayla ilerledi:
-1. Modülasyon seçimi ve gerekçesi (COFDM neden seçildi)
-2. NET protokolü tasarımı: çoklu istasyon, dinamik master seçimi,
-   ortak+özel sohbet, zaman dilimli kanal erişimi
-3. Somut bir senaryo simülasyonu (3-4 istasyonlu örnek, süre hesapları)
-4. **Python ile gerçek bir test ortamı** kuruldu: TCP tabanlı kanal
-   sunucusu + istasyon istemcileri (önce JSON/soyut simülasyon)
-5. **Gerçek bir OFDM modemi** yazıldı (`modem.py`) - artık gerçekten
-   ses üretip gerçekten demodüle ediyor, soyut simülasyon değil
-6. `monitor.py` ile kanaldaki gerçek sesi dinleme eklendi
-7. Gerçek kullanımda bulunan iki ciddi hata düzeltildi (aşağıda detaylı)
+The work progressed in this order:
+1. Modulation choice and rationale (why COFDM was chosen)
+2. NET protocol design: multiple stations, dynamic master election,
+   common+directed chat, time-sliced channel access
+3. A concrete scenario simulation (a 3-4 station example, timing calculations)
+4. **A real test environment in Python** was built: a TCP-based channel
+   server + station clients (first a JSON/abstract simulation)
+5. **A real OFDM modem** was written (`modem.py`) — it now really produces
+   audio and really demodulates it; it is not an abstract simulation
+6. Listening to the real channel audio was added with `monitor.py`
+7. Two serious bugs found in real use were fixed (detailed below)
 
-## Mimari
+## Architecture
 
 ```
-netproto.py          Ortak sabitler + JSON çerçeveleme yardımcıları
-                      (send_json/read_json, CRC32, süper-çerçeve
-                      zamanlama sabitleri). NOT: dosya adı bilerek
-                      "protocol.py" DEĞİL - kullanıcının sisteminde
-                      aynı isimde başka bir PyPI paketiyle çakıştığı
-                      için "netproto.py" olarak yeniden adlandırıldı.
-                      Bir sonraki oturumda da bu isim korunmalı.
+netproto.py          Shared constants + JSON framing helpers (send_json/
+                      read_json, CRC32, super-frame timing constants). NOTE:
+                      the file name is deliberately NOT "protocol.py" — it was
+                      renamed "netproto.py" because it clashed with another
+                      PyPI package of the same name on the user's system.
+                      This name must be kept in a later session too.
 
-modem.py              GERÇEK bir OFDM modülatör/demodülatör. Uydurma
-                      ton değil - gerçek IFFT/FFT, gerçek bit hatalarına
-                      gerçekten maruz kalıyor. Detaylar aşağıda.
+modem.py              A REAL OFDM modulator/demodulator. Not made-up tones —
+                      real IFFT/FFT, really subject to real bit errors.
+                      Details below.
 
-channel_server.py     "Kanal fiziği": istasyonların gerçekten ürettiği
-                      ses örneklerini taşır, yarı çift yönlü erişimi
-                      zorunlu kılar (aynı anda tek istasyon), isteğe
-                      bağlı GERÇEK AWGN gürültü (--snr) ve çoklu-yol
-                      yankısı (--multipath-delay-ms/--multipath-gain)
-                      ekler. Hiçbir protokol mantığı (master seçimi,
-                      ARQ, sohbet vb.) İÇERMEZ - kasıtlı katman ayrımı.
+channel_server.py     "Channel physics": carries the audio samples the
+                      stations really produce, enforces half-duplex access
+                      (one station at a time), optionally adds REAL AWGN noise
+                      (--snr) and multipath echo (--multipath-delay-ms/
+                      --multipath-gain). Contains NO protocol logic (master
+                      election, ARQ, chat, etc.) — a deliberate layer split.
 
-client.py             Asıl istasyon yazılımı. TÜM protokol mantığı
-                      burada: LBT+backoff kanal erişimi, dinamik master
-                      seçimi/failover, roster, ortak+özel sohbet,
-                      blok+CRC+ARQ ile görüntü/dosya transferi, ani
-                      kopma/yeniden bağlanma. Çerçeveleri modem.py ile
-                      gerçekten modüle/demodüle eder.
+client.py             The actual station software. ALL the protocol logic is
+                      here: LBT+backoff channel access, dynamic master
+                      election/failover, roster, common+directed chat,
+                      image/file transfer via block+CRC+ARQ, sudden drop/
+                      reconnect. It really modulates/demodulates the frames
+                      with modem.py.
 
-monitor.py             Kanaldaki GERÇEK sesi dinleyen pasif izleyici
-                      (opsiyonel). Roster'da görünmez (hiç göndermez).
-                      Kendi demodülatörüyle çözmeyi dener, çözemezse
-                      "çözülemedi" der.
+monitor.py            A passive listener on the REAL channel audio (optional).
+                      Does not appear in the roster (never transmits). Tries
+                      to decode it with its own demodulator, and says "could
+                      not decode" when it cannot.
 
-README.md              Kullanıcıya yönelik kurulum/kullanım talimatı
-                      (bu dosyadan farklı - CLAUDE.md geliştirme
-                      bağlamı için, README.md son kullanıcı için).
+README.md            The end-user setup/usage instructions (different from
+                      this file — CLAUDE.md is for development context,
+                      README.md is for the end user).
 
-test_files/             grup_gorseli.bin (12KB), belge.bin (45KB) -
-                      hazır test verileri. ornek_net_sesi.wav - gerçek
-                      modüle edilmiş protokol çerçevelerinin (JOIN,
-                      BEACON, 2x CHAT, BULK_META, BULK_BLOCK) art arda
-                      dizilmiş, doğrudan çalınabilir örneği.
+test_files/          grup_gorseli.bin (12KB), belge.bin (45KB) — ready-made
+                      test data. ornek_net_sesi.wav — real modulated protocol
+                      frames (JOIN, BEACON, 2x CHAT, BULK_META, BULK_BLOCK)
+                      laid back to back, a directly playable example.
 ```
 
-Kasıtlı katman ayrımı: `channel_server.py` = kanalın FİZİĞİ,
-`client.py` = protokol MANTIĞI, `modem.py` = MODÜLASYON. Gerçek SDR'a
-geçerken büyük ihtimalle sadece `channel_server.py` değişir.
+Deliberate layer split: `channel_server.py` = the channel PHYSICS,
+`client.py` = the protocol LOGIC, `modem.py` = the MODULATION. Moving to a
+real SDR most likely changes only `channel_server.py`.
 
-## modem.py — PHY tasarım detayları
+## modem.py — PHY design details
 
-Tasarım sohbetindeki PHY tablosuyla uyumlu:
+Consistent with the PHY table from the design discussion:
 
-- `SAMPLE_RATE = 8000` Hz, `N = 256` (FFT boyutu), `CP_LEN = 64` (8ms
-  koruma aralığı), `SYMBOL_LEN = 320`
-- `DATA_CARRIERS = range(10, 87)` → 77 alt taşıyıcı (~312-2688 Hz,
-  2.7kHz hedefine uygun)
-- Senkronizasyon: Schmidl-Cox tarzı - preamble sadece çift indeksli alt
-  taşıyıcılarda enerji taşıyor (zaman domeninde iki özdeş yarım),
-  alıcı bunu öz-korelasyonla arıyor
-- **Frekans-domeninde diferansiyel kodlama**: bitler mutlak faz değil,
-  bitişik alt taşıyıcılar arası faz FARKI olarak taşınıyor (ilk
-  taşıyıcı = sabit referans, bilgi taşımıyor). Bu, kanal
-  kestirimi/ekolayzır olmadan senkronizasyon hatalarına karşı
-  dayanıklılık sağlıyor (aşağıdaki hata #2'ye bakın)
-- Header sembolü: her zaman BPSK, `HEADER_BITS=17` (16-bit uzunluk +
-  1-bit mod bayrağı: 0=QPSK,1=BPSK), `HEADER_REPEAT=4` tekrar +
-  çoğunluk oylaması ile decode ediliyor
-- Veri sembolleri: `mode` parametresine göre BPSK ya da QPSK
+- `SAMPLE_RATE = 8000` Hz, `N = 256` (FFT size), `CP_LEN = 64` (8 ms guard
+  interval), `SYMBOL_LEN = 320`
+- `DATA_CARRIERS = range(10, 87)` → 77 subcarriers (~312-2688 Hz, within the
+  2.7 kHz target)
+- Synchronisation: Schmidl-Cox style — the preamble carries energy only on
+  the even-indexed subcarriers (two identical halves in the time domain), and
+  the receiver searches for that by autocorrelation
+- **Frequency-domain differential coding**: the bits are carried not as
+  absolute phase but as the phase DIFFERENCE between adjacent subcarriers
+  (the first carrier = a fixed reference, carries no information). This gives
+  robustness against synchronisation errors without channel estimation/
+  equalisation (see bug #2 below)
+- Header symbol: always BPSK, `HEADER_BITS=17` (16-bit length + 1-bit mode
+  flag: 0=QPSK,1=BPSK), decoded with `HEADER_REPEAT=4` repeats + majority
+  voting
+- Data symbols: BPSK or QPSK per the `mode` parameter
   (`Modem.modulate(payload, mode)`)
-- Bütünlük: CRC32 (payload'a eklenip gönderiliyor), FEC/LDPC/RS YOK -
-  hata düzeltme üst katman ARQ'ya bırakılıyor (bilinçli tasarım)
+- Integrity: CRC32 (appended to the payload and sent), NO FEC/LDPC/RS — error
+  correction is left to the upper layer's ARQ (a deliberate design)
 
-**Ölçülen gerçek performans** (test edildi, uydurulmadı):
-- Gürültüsüz: %100 başarı (1B - 5000B arası çeşitli boyutlarda test edildi)
-- AWGN: temiz sinyalden 18dB SNR'ye kadar %100, ~14-16dB'de hafif
-  düşüş, ~10-12dB'de keskin "uçurum" (FEC'siz QPSK için beklenen -
-  tasarım sohbetindeki "COFDM cliff-edge" konusunun somut kanıtı)
-- BPSK, QPSK'den belirgin daha dayanıklı ama ~%67 daha yavaş (gerçek
-  ölçüm: 10dB'de QPSK 0/20 başarı, BPSK 19/20 başarı)
-- Multipath: koruma aralığı (8ms) içinde HAFİF yankılarda (-16dB
-  kazanç, 7ms'ye kadar gecikme) sağlam; GÜÇLÜ yankılarda (-10dB
-  kazanç, 3ms+) ya da koruma aralığı dışına taşan gecikmelerde
-  bilerek bozuluyor (kanal kestirimi olmadığı için - bkz. sınırlamalar)
+**Measured real performance** (tested, not made up):
+- Noiseless: 100% success (tested at various sizes from 1B to 5000B)
+- AWGN: 100% from a clean signal down to 18 dB SNR, a slight drop at
+  ~14-16 dB, a sharp "cliff" at ~10-12 dB (expected for QPSK without FEC —
+  concrete evidence of the "COFDM cliff-edge" topic from the design
+  discussion)
+- BPSK is markedly more robust than QPSK but ~67% slower (real measurement:
+  at 10 dB QPSK 0/20 success, BPSK 19/20 success)
+- Multipath: solid for MILD echoes within the guard interval (8 ms) (-16 dB
+  gain, delays up to 7 ms); breaks on purpose for STRONG echoes (-10 dB gain,
+  3 ms+) or delays beyond the guard interval (because there is no channel
+  estimation — see the limitations)
 
-## client.py — Protokol tasarımı
+## client.py — Protocol design
 
-**Çerçeve tipleri:** `JOIN_REQUEST`, `BEACON`, `MASTER_CLAIM`(zımni,
-BEACON içinde), `CHAT` (broadcast/unicast, DST alanıyla), `BULK_META`,
+**Frame types:** `JOIN_REQUEST`, `BEACON`, `MASTER_CLAIM` (implicit, inside
+BEACON), `CHAT` (broadcast/unicast, via the DST field), `BULK_META`,
 `BULK_BLOCK`, `BULK_END`, `BULK_STATUS`.
 
-**Master seçimi/failover:** İlk bağlanan istasyon, `BEACON_TIMEOUT`
-(24sn, `netproto.py`) süresince beacon duymazsa kendini master ilan
-eder. Master her `BEACON_INTERVAL` (8sn) bir beacon yayınlar (roster +
-atanmış yedek master ile). Yedek master, ana master'dan 24sn beacon
-gelmezse otomatik devralır. İki istasyon aynı anda master olursa,
-alfabetik olarak küçük çağrı işareti kazanır (basit tie-break).
-**Bilinen sınırlama:** şu an sadece TEK bir atanmış yedek master'a
-kadar zincirleniyor - o da düşerse roster'daki bir sonraki istasyonun
-devralması için ek mantık YOK (bkz. sonraki adımlar).
+**Master election/failover:** The first station to connect declares itself
+master if it hears no beacon for `BEACON_TIMEOUT` (24 s, `netproto.py`). The
+master broadcasts a beacon every `BEACON_INTERVAL` (8 s) (with the roster +
+the assigned backup master). The backup master takes over automatically if no
+beacon arrives from the main master for 24 s. If two stations become master
+at the same time, the alphabetically smaller callsign wins (a simple
+tie-break). **Known limitation:** it currently chains only as far as ONE
+assigned backup master — if that one also drops, there is NO extra logic for
+the next station in the roster to take over (see the next steps).
 
-**Roster:** Her istasyon local olarak `{callsign: {last_seen, status}}`
-tutuyor. `LOST_TIMEOUT` (30sn) sonra "kayıp" işaretleniyor,
-`REMOVE_TIMEOUT` (120sn) sonra tamamen siliniyor.
+**Roster:** Each station keeps `{callsign: {last_seen, status}}` locally.
+Marked "lost" after `LOST_TIMEOUT` (30 s), removed entirely after
+`REMOVE_TIMEOUT` (120 s).
 
-**ARQ (blok bazlı):** Dosya/görüntü `BLOCK_SIZE=220` baytlık bloklara
-bölünüyor, her blok CRC32 ile korunuyor. Alıcı `BULK_END` sonrası eksik
-blokların listesini (`BULK_STATUS`) gönderiyor, gönderen sadece o
-blokları tekrar gönderiyor - tüm transfer baştan başlamıyor.
+**ARQ (block-based):** A file/image is split into `BLOCK_SIZE=220`-byte
+blocks, each protected by CRC32. After `BULK_END` the receiver sends the list
+of missing blocks (`BULK_STATUS`), and the sender resends only those blocks —
+the whole transfer does not start over.
 
-**Ani kopma/yeniden bağlanma:** `/drop` TCP bağlantısını kapatır ama
-process/state RAM'de canlı kalır. `/reconnect` yeniden bağlanır,
-aktif beacon duyulursa ASLA kendini master ilan etmez (sadece
-JOIN_REQUEST gönderir). Alıcı taraf, gönderen istasyonun
-JOIN_REQUEST ile geri döndüğünü gördüğünde (roster'da "kayıp"
-olsun ya da olmasın - `handle_frame`'in JOIN_REQUEST dalında)
-otomatik olarak yarım kalan transferler için eksik blokları ister.
-Gönderen tarafta da (`on_bulk_status`) gecikmeli bir BULK_STATUS
-gelirse, aktif bir ARQ döngüsü olmasa bile elindeki bloklarla
-karşılık verir (arka plan görevi olarak, `_resend_missing`).
+**Sudden drop/reconnect:** `/drop` closes the TCP connection but the
+process/state stays alive in RAM. `/reconnect` reconnects, and if an active
+beacon is heard it NEVER declares itself master (it only sends a
+JOIN_REQUEST). When the receiving side sees the sending station come back with
+a JOIN_REQUEST (whether or not it is "lost" in the roster — in
+`handle_frame`'s JOIN_REQUEST branch) it automatically requests the missing
+blocks for the half-finished transfers. On the sending side too
+(`on_bulk_status`), if a delayed BULK_STATUS arrives it responds with the
+blocks it holds even when there is no active ARQ loop (as a background task,
+`_resend_missing`).
 
-**Kontrol pencereleri (ÇOK ÖNEMLİ, gerçek bir hatanın düzeltmesi):**
-`_send_blocks` içinde her `CONTROL_WINDOW_EVERY=3` blokta bir,
-`CONTROL_WINDOW_PAUSE=1.2` saniyelik bilinçli bir duraklama var. Bu
-OLMADAN bulk transfer kanalı sürekli işgal eder - sohbet mesajları VE
-BEACON'LAR bile açlıktan ölür, bu da yanlış master seçimi
-çakışmalarına yol açar (gerçekte gördük, aşağıdaki Hata #3'e bakın).
-Bu parametreleri düşürmeyin/artırmayın demiyorum ama neden bu değerde
-olduğunu bilmeden değiştirmeyin - matematiği yorumda (`client.py`
-içinde `_send_blocks` üstündeki blok) açıklanmış durumda.
+**Control windows (VERY IMPORTANT, the fix for a real bug):** In
+`_send_blocks` there is a deliberate pause of `CONTROL_WINDOW_PAUSE=1.2`
+seconds every `CONTROL_WINDOW_EVERY=3` blocks. WITHOUT it the bulk transfer
+occupies the channel continuously — chat messages AND even BEACONS starve,
+which leads to wrong master-election conflicts (we saw this for real, see
+Bug #3 below). I am not saying do not lower/raise these parameters, but do not
+change them without knowing why they are at these values — the maths is
+explained in a comment (the block above `_send_blocks` in `client.py`).
 
-## Bulunan ve düzeltilen gerçek hatalar (önemli, tekrar düşmeyin)
+## Real bugs found and fixed (important, do not fall into them again)
 
-Bunlar TAHMİN değil, gerçekten test edilip gözlemlenip düzeltilmiş
-hatalar:
+These are NOT guesses — they were really tested, observed and fixed:
 
-1. **`receive_loop` deadlock'u** (ilk JSON-tabanlı sürümde): Gelen bir
-   çerçeveye tetiklenen yanıtlar (`on_bulk_end`, `on_bulk_status`)
-   `send_frame`'i DOĞRUDAN `await` ediyordu; ama `send_frame`'in kendi
-   yanıtını (TX_GRANTED) işleyecek olan da `receive_loop`'un kendisiydi
-   - kendi kendini bekliyordu. **Çözüm:** gelen bir çerçeveye tetiklenen
-   TÜM gönderimler `asyncio.create_task(...)` ile arka planda
-   başlatılmalı, asla `receive_loop`'un çağrı zincirinde `await`
-   edilmemeli.
+1. **`receive_loop` deadlock** (in the first JSON-based version): responses
+   triggered by an incoming frame (`on_bulk_end`, `on_bulk_status`) `await`ed
+   `send_frame` DIRECTLY; but the one that would handle `send_frame`'s own
+   reply (TX_GRANTED) was `receive_loop` itself — it was waiting on itself.
+   **Fix:** ALL sends triggered by an incoming frame must be started in the
+   background with `asyncio.create_task(...)`, never `await`ed on
+   `receive_loop`'s call chain.
 
-2. **OFDM senkronizasyon hataları** (modem.py geliştirilirken, 3 ayrı
-   hata):
-   - CP (cyclic prefix), periyodik preamble'ın bir kopyası olduğundan
-     korelasyon skorunda gerçek başlangıçtan CP_LEN kadar ÖNCE başlayan
-     bir "plato" oluşuyordu → hareketli ortalama (moving average) ile
-     düzeltildi.
-   - Mutlak faz tabanlı demodülasyon, 1 örneklik senkron hatasında bile
-     yüksek indeksli alt taşıyıcılarda büyük faz kaymasına yol
-     açıyordu → frekans-domeninde diferansiyel kodlamaya geçildi
-     (yukarıda açıklandı).
-   - Küçük bir senkron kayması, son sembolü arabellek dışına
-     taşırıyordu → waveform'un sonuna `CP_LEN` örneklik bir tampon
-     (padding) eklendi.
+2. **OFDM synchronisation bugs** (while developing modem.py, 3 separate bugs):
+   - Because the CP (cyclic prefix) is a copy of the periodic preamble, the
+     correlation score formed a "plateau" that started CP_LEN BEFORE the true
+     start → fixed with a moving average.
+   - Absolute-phase-based demodulation caused a large phase shift on the
+     high-index subcarriers on even a 1-sample sync error → switched to
+     frequency-domain differential coding (explained above).
+   - A small sync slip pushed the last symbol past the buffer → a `CP_LEN`
+     sample pad (padding) was added to the end of the waveform.
 
-3. **Bulk transfer kanalı boğuyordu** (gerçek kullanımda kullanıcı
-   tarafından bulundu): İlk düzeltmede kontrol penceresi çok kısa/
-   seyrekti (her 6 blokta 0.5sn) - rakip istasyonların yeniden deneme
-   zamanlaması sunucudan gelen `retry_after`'a göre "mevcut bloğun
-   bitişine" senkronize oluyor ama pencerenin TAM olarak ne zaman
-   açılacağını bilemiyor, bu yüzden pencereyi büyük ihtimalle
-   kaçırıyordu. Gerçek sonuç: sadece sohbet değil, BEACON'LAR bile
-   kaçırılıyor, iki istasyon da birbirini "duyamayıp" kendini master
-   ilan ediyordu (gerçek log'da görüldü: `master çakışması`, `kayıp
-   olarak işaretlendi`). **Çözüm:** pencere sıklaştırıldı ve
-   genişletildi (her 3 blokta 1.2sn), yeniden deneme sayısı 20'den
-   40'a çıkarıldı. 45 bloklu gerçek bir transferle (README.md, 9815B)
-   yeniden test edildi: SIFIR master çakışması (başlangıçtaki tek
-   seferlik normal seçim çakışması hariç), iki sohbet mesajı da (1.3sn
-   ve 3.7sn içinde) başarıyla iletildi, dosya bit-eşleşerek tamamlandı.
+3. **Bulk transfer choked the channel** (found by the user in real use): in
+   the first fix the control window was too short/sparse (0.5 s every 6
+   blocks) — a competing station's retry timing syncs to "the end of the
+   current block" from the server's `retry_after`, but it does not know
+   exactly when the window opens, so it most likely missed it. The real
+   result: not just chat but even BEACONS were missed, both stations could not
+   "hear" each other and both declared themselves master (seen in a real log:
+   `master conflict`, `marked as lost`). **Fix:** the window was made more
+   frequent and wider (1.2 s every 3 blocks), and the retry count was raised
+   from 20 to 40. Re-tested with a real 45-block transfer (README.md, 9815B):
+   ZERO master conflicts (except the one-time normal election conflict at the
+   start), both chat messages delivered successfully (within 1.3 s and 3.7 s),
+   the file completed bit-exact.
 
-4. **`protocol.py` isim çakışması**: Kullanıcının sisteminde
-   (`~/Library/Python/3.9/site-packages/protocol/`) aynı isimde başka
-   bir paket kuruluymuş, yerel `protocol.py`'nin önüne geçiyordu.
-   **Çözüm:** dosya `netproto.py` olarak yeniden adlandırıldı, tüm
-   importlar güncellendi. Sahte bir çakışan paket simüle edilerek
-   (bilerek `sys.path`'in en önüne konularak) düzeltme doğrulandı.
+4. **`protocol.py` name clash**: another package of the same name was
+   installed on the user's system
+   (`~/Library/Python/3.9/site-packages/protocol/`) and took precedence over
+   the local `protocol.py`. **Fix:** the file was renamed `netproto.py` and
+   all imports were updated. The fix was verified by simulating a fake
+   clashing package (deliberately placed at the front of `sys.path`).
 
-## Test durumu (doğrulanmış senaryolar)
+## Test status (verified scenarios)
 
-Hepsi gerçekten çalıştırılıp doğrulandı (uydurulmadı):
+All really run and verified (not made up):
 
-- ✅ 2 istasyon: temel bağlantı, JOIN_REQUEST, master seçimi
-- ✅ Ortak (broadcast) ve özel (unicast) sohbet, gerçek ses üzerinden
-- ✅ Küçük (600B) ve orta (1200-9815B) dosya transferi, gerçek OFDM
-  modülasyon/demodülasyon ile, bit-eşleşen sonuç
-- ✅ 14dB AWGN gürültü altında canlı ARQ kurtarma (1 blok bozuldu,
-  2 tur ARQ ile düzeldi, dosya bit-eşleşti)
-- ✅ Ani kopma (`/drop`) + yeniden bağlanma (`/reconnect`) + otomatik
-  eksik blok isteme + sadece eksik kısmın tamamlanması (baştan
-  başlamadan) - hem master hem normal istasyon rolünde test edildi
-- ✅ Master düşüşü + yedek master'ın otomatik devralması
-- ✅ 3 istasyonlu senaryo (master + 2 istasyon, roster senkronizasyonu)
-- ✅ 45 bloklu (9815B) gerçek dosya transferi sürerken sohbet VE
-  beacon'ların güvenilir şekilde iletilmesi (kontrol penceresi
-  düzeltmesi sonrası)
-- ✅ `netproto.py` isim çakışması senaryosu (kasıtlı simüle edildi)
-- ⚠️ Multipath testi sadece `modem.py` seviyesinde (standalone) test
-  edildi, tam client/server entegrasyonunda `--multipath-*`
-  parametreleriyle UÇTAN UCA henüz test edilmedi (server tarafında
-  kod var ve mantıken doğru olmalı ama gerçek bir transferle
-  doğrulanmadı)
-- ❌ 4 istasyonlu tam NET senaryosu (grup görüntüsü + özel dosya +
-  ani kopma - orijinal sohbetteki senaryo) gerçek ses üzerinden HENÜZ
-  uçtan uca test edilmedi (sadece 2-3 istasyonla test edildi)
-- ❌ Gerçek ses kartı/mikrofon loopback testi yapılmadı (hâlâ TCP
-  üzerinden base64 ile taşınıyor)
+- ✅ 2 stations: basic connection, JOIN_REQUEST, master election
+- ✅ Common (broadcast) and directed (unicast) chat, over real audio
+- ✅ Small (600B) and medium (1200-9815B) file transfer, with real OFDM
+  modulation/demodulation, a bit-exact result
+- ✅ Live ARQ recovery under 14 dB AWGN noise (1 block corrupted, fixed in
+  2 ARQ rounds, the file was bit-exact)
+- ✅ Sudden drop (`/drop`) + reconnect (`/reconnect`) + automatic missing-
+  block request + completing only the missing part (without starting over) —
+  tested in both the master and normal-station roles
+- ✅ Master drop + the backup master taking over automatically
+- ✅ A 3-station scenario (master + 2 stations, roster synchronisation)
+- ✅ Chat AND beacons being delivered reliably while a real 45-block (9815B)
+  file transfer is in progress (after the control-window fix)
+- ✅ The `netproto.py` name-clash scenario (deliberately simulated)
+- ⚠️ The multipath test has only been done at the `modem.py` level
+  (standalone); it has NOT yet been tested END TO END in the full
+  client/server integration with the `--multipath-*` parameters (the
+  server-side code is there and should be logically correct, but was not
+  verified with a real transfer)
+- ❌ The full 4-station NET scenario (a group image + a private file + a
+  sudden drop — the scenario from the original discussion) has NOT yet been
+  tested end to end over real audio (only tested with 2-3 stations)
+- ❌ No real sound-card/microphone loopback test was done (still carried over
+  TCP as base64)
 
-## Bilinen sınırlamalar / sonraki adımlar (öncelik sırasıyla değil)
+## Known limitations / next steps (not in priority order)
 
-1. **Failover zinciri tek yedekle sınırlı** - roster'daki bir sonraki
-   aktif istasyonun devralması için mantık eklenmeli.
-2. **Multipath uçtan uca doğrulanmadı** - yukarıya bakın.
-3. **4 istasyonlu tam senaryo gerçek ses ile test edilmedi.**
-4. **Adaptif bit yükleme yok** - `mode` (BPSK/QPSK) şu an manuel/sabit
-   seçiliyor, SNR'ye göre otomatik seçim yok.
-5. **Kanal kestirimi/ekolayzır yok** - multipath sınırlamasının kök
-   nedeni, pilot tabanlı kanal kestirimi eklemek doğal bir sonraki adım.
-6. **LDPC/RS FEC yok** - bütünlük sadece CRC32, hata düzeltme ARQ'ya
-   bırakılmış (bilinçli MVP kararı, ama gerçek bir sonraki adım).
-7. **Gerçek ses kartı/mikrofon I/O yok** - hâlâ TCP+JSON+base64 ile
-   örnekler taşınıyor, gerçek `sounddevice` ile ses donanımına
-   bağlanmadı.
-8. **Gerçek SDR/RF entegrasyonu yok** - README'deki "SDR'a geçiş için
-   yol haritası" bölümüne bakın; `channel_server.py`'nin değişmesi,
-   `client.py`/`modem.py`'nin büyük ölçüde aynı kalması bekleniyor.
-9. **Kontrol penceresi (CONTROL_WINDOW_EVERY/PAUSE) sabit** - trafiğe
-   göre adaptif hale getirilebilir (ör. bekleyen sohbet varsa pencere
-   sıklığını artırmak gibi).
+1. **The failover chain is limited to a single backup** — logic for the next
+   active station in the roster to take over needs to be added.
+2. **Multipath not verified end to end** — see above.
+3. **The full 4-station scenario was not tested with real audio.**
+4. **No adaptive bit loading** — `mode` (BPSK/QPSK) is currently selected
+   manually/fixed; there is no automatic selection by SNR.
+5. **No channel estimation/equaliser** — the root cause of the multipath
+   limitation; adding pilot-based channel estimation is a natural next step.
+6. **No LDPC/RS FEC** — integrity is CRC32 only, error correction is left to
+   ARQ (a deliberate MVP decision, but a real next step).
+7. **No real sound-card/microphone I/O** — samples are still carried over
+   TCP+JSON+base64, not connected to audio hardware via real `sounddevice`.
+8. **No real SDR/RF integration** — see the "Roadmap to SDR" section in the
+   README; `channel_server.py` is expected to change, `client.py`/`modem.py`
+   to stay largely the same.
+9. **The control window (CONTROL_WINDOW_EVERY/PAUSE) is fixed** — it could be
+   made adaptive to traffic (e.g. increasing the window frequency when there
+   is pending chat).
 
-## Nasıl çalıştırılır (özet, detaylar README.md'de)
+## How to run (summary, details in README.md)
 
 ```
-pip install numpy   # tek dış bağımlılık
+pip install numpy   # the only external dependency
 
 # terminal 1
 python3 channel_server.py --port 6000
-# isteğe bağlı gerçek bozulma: --snr 15 --multipath-delay-ms 3 --multipath-gain 0.2
+# optional real impairment: --snr 15 --multipath-delay-ms 3 --multipath-gain 0.2
 
-# terminal 2 (opsiyonel ama önerilir - gerçek sesi dinlemek için)
+# terminal 2 (optional but recommended - to listen to the real audio)
 python3 monitor.py --port 6000
 
-# terminal 3, 4, 5, 6 - istasyonlar
+# terminals 3, 4, 5, 6 - stations
 python3 client.py TA1ABC
 python3 client.py TA2DEF
-# komutlar: /chat, /msg, /sendimage, /sendfile, /status, /drop, /reconnect, /quit
+# commands: /chat, /msg, /sendimage, /sendfile, /status, /drop, /reconnect, /quit
 ```
 
-## Rust portu + egui GUI (`rust/` dizini)
+## Rust port + egui GUI (the `rust/` directory)
 
-Kullanıcı "client ve channel_server için UI, mümkünse çapraz-platform
-derlenebilir bir şey (Rust), monitor için de UI — havadaki dalgayı
-scope + spectrum + waterfall olarak göstersin" dedi. Kararlar (kullanıcı
-onaylı): **tam Rust portu** (modem + protokol + kanal + GUI), **egui/eframe**,
-**hepsi tek uygulamada**, kod `rust/` alt dizininde, monitörde **cpal ile
-ses de var**, ve Rust tarafı **Python ile aynı JSON TCP telini** konuşur.
+The user asked for "a UI for client and channel_server, ideally something
+cross-platform and compilable (Rust), and a UI for monitor too — showing the
+on-air waveform as scope + spectrum + waterfall". Decisions (user-approved):
+**a full Rust port** (modem + protocol + channel + GUI), **egui/eframe**,
+**all in one app**, the code in the `rust/` subdirectory, **audio in the
+monitor via cpal** too, and the Rust side speaks **the same JSON TCP wire as
+Python**.
 
-Python dosyaları (`modem.py`, `client.py`, `channel_server.py`,
-`monitor.py`, `netproto.py`) kökte **dokunulmadan** duruyor — referans +
-çapraz-doğrulama.
+The Python files (`modem.py`, `client.py`, `channel_server.py`, `monitor.py`,
+`netproto.py`) stay at the root **untouched** — reference + cross-check.
 
-### Workspace (`rust/`, Cargo workspace)
+### Workspace (`rust/`, a Cargo workspace)
 
 ```
-crates/netproto   sabitler, Frame/ClientMsg/ServerMsg (serde), CRC32, satır-JSON çerçeveleme
-crates/modem      OFDM mod/demod — modem.py'nin BİT-BİREBİR portu (rustfft). Sabit preamble gömülü.
-crates/channel    ChannelCore (yarı çift yönlü, AWGN, multipath) + Link (LinkTx/LinkRx ayrık) +
-                  InProc/Tcp Connector + tcp_server (channel_server.py tel-uyumlu) +
-                  pasif monitör demod -> ChannelEvent::Decoded. TEST hook'u: cfg.corrupt_burst_nums.
-crates/protocol   Station = client.py'nin tokio async portu. StationConfig ile zamanlamalar
-                  test için kısaltılabilir (GUI gerçek 24 sn seçim kullanır).
-crates/dsp-viz    ScopeBuf (min/max zarf) + SpectrumAnalyzer (Hann+Welch EWMA+peak-hold) +
-                  Waterfall (dB->RGB) + Colormap (256 LUT). GUI çatısından bağımsız.
-apps/atchat-channeld  headless TCP kanal — channel_server.py argümanları birebir
-apps/atchat-gui       eframe: Kanal | İstasyonlar | Monitör sekmeleri + cpal ses.
-                      Motor (engine.rs) ayrı thread'de tokio runtime; GUI↔motor mpsc + Arc<Mutex<Snapshot>>.
+crates/netproto   constants, Frame/ClientMsg/ServerMsg (serde), CRC32, line-JSON framing
+crates/modem      OFDM mod/demod — a BIT-EXACT port of modem.py (rustfft). The fixed preamble is embedded.
+crates/channel    ChannelCore (half-duplex, AWGN, multipath) + Link (LinkTx/LinkRx separate) +
+                  InProc/Tcp Connector + tcp_server (channel_server.py wire-compatible) +
+                  passive monitor demod -> ChannelEvent::Decoded. TEST hook: cfg.corrupt_burst_nums.
+crates/protocol   Station = a tokio-async port of client.py. Timings can be shortened for tests via
+                  StationConfig (the GUI uses the real 24 s election).
+crates/dsp-viz    ScopeBuf (min/max envelope) + SpectrumAnalyzer (Hann+Welch EWMA+peak-hold) +
+                  Waterfall (dB->RGB) + Colormap (256 LUT). Independent of any GUI framework.
+apps/atchat-channeld  headless TCP channel — the channel_server.py arguments exactly
+apps/atchat-gui       eframe: Channel | Stations | Monitor tabs + cpal audio.
+                      The engine (engine.rs) runs a tokio runtime on its own thread; GUI↔engine mpsc + Arc<Mutex<Snapshot>>.
 ```
 
-### Doğrulama durumu (hepsi geçiyor)
+### Verification status (all passing)
 
-- `modem`: gürültüsüz roundtrip %100; **çift yönlü Python çapraz-vektör
-  bit-birebir** (`tools/dump_vectors.py` + `tests/cross_vectors.rs` +
-  `tools/check_vectors.py`); AWGN eğrisi CLAUDE.md'deki uçurumu yeniden
-  üretiyor (`tests/awgn_sweep.rs`, `#[ignore]`).
-- `channel`: 8 test + **Python `client.py`/`monitor.py` Rust `atchat-channeld`'e
-  bağlanıp sohbet/ARQ/dosya bit-birebir** (elle doğrulandı).
-- `protocol`: 6 senaryo — election, chat, bulk bit-birebir, ARQ (kayıp blok),
-  drop/reconnect resume, backup takeover. `#[ignore]`'lı tam-boyut testi de var.
-- `dsp-viz`: 11 birim testi. `atchat-gui`: motor↔GUI glue testi.
-- `cargo clippy --workspace` temiz, `cargo fmt` uygulanmış.
+- `modem`: noiseless roundtrip 100%; **bidirectional Python cross-vector
+  bit-exact** (`tools/dump_vectors.py` + `tests/cross_vectors.rs` +
+  `tools/check_vectors.py`); the AWGN curve reproduces the cliff from
+  CLAUDE.md (`tests/awgn_sweep.rs`, `#[ignore]`).
+- `channel`: 8 tests + **the Python `client.py`/`monitor.py` connecting to the
+  Rust `atchat-channeld` with bit-exact chat/ARQ/file** (verified by hand).
+- `protocol`: 6 scenarios — election, chat, bulk bit-exact, ARQ (lost block),
+  drop/reconnect resume, backup takeover. There is also a `#[ignore]`-d
+  full-size test.
+- `dsp-viz`: 11 unit tests. `atchat-gui`: an engine↔GUI glue test.
+- `cargo clippy --workspace` clean, `cargo fmt` applied.
 
-### Port sırasında bulunan/korunan hatalar
+### Bugs found/preserved during the port
 
-- **CLAUDE.md #1 (deadlock)**: gelen çerçeveye tetiklenen TÜM gönderimler
-  `tokio::spawn` — `receive_loop` zincirinde asla `await` edilmez.
-- **CLAUDE.md #3 (kontrol penceresi)**: `_send_blocks`'ta her 3 blokta 1.2 sn.
-- **YENİ (Rust'a özgü)**: `receive_loop`, `rx_slot` (tokio Mutex) guard'ını
-  `notified().await` boyunca tutuyordu → `reconnect` kilidi alamıyor →
-  kilitlenme. Düzeltme: guard yalnız `take()` süresince tutulur.
-- **Bilinen sınırlama (client.py'den miras)**: ARQ turundan sonraki
-  BULK_END kaybolursa transfer, gönderen yeniden bağlanana kadar askıda
-  kalır. Bu yüzden `arq_recovers_from_lost_blocks` testi saf AWGN yerine
-  `cfg.corrupt_burst_nums` ile deterministik blok bozma kullanır.
+- **CLAUDE.md #1 (deadlock)**: ALL sends triggered by an incoming frame use
+  `tokio::spawn` — never `await`ed on the `receive_loop` chain.
+- **CLAUDE.md #3 (control window)**: 1.2 s every 3 blocks in `_send_blocks`.
+- **NEW (Rust-specific)**: `receive_loop` held the `rx_slot` (tokio Mutex)
+  guard across `notified().await` → `reconnect` could not acquire the lock →
+  deadlock. Fix: the guard is held only for the duration of `take()`.
+- **Known limitation (inherited from client.py)**: if the BULK_END after an
+  ARQ round is lost, the transfer stays suspended until the sender
+  reconnects. That is why the `arq_recovers_from_lost_blocks` test uses
+  deterministic block corruption via `cfg.corrupt_burst_nums` instead of pure
+  AWGN.
 
-### Kalan (Faz 6)
+### Remaining (Phase 6)
 
-- `cargo-dist` ile paket üretimi (CI matris `.github/workflows/ci.yml` HAZIR).
-- Kök CLAUDE.md/README.md Rust bölümü (BU bölüm).
-- Waterfall frekans-zoom (0–2.76 kHz) — EKLENDİ.
+- Package production with `cargo-dist` (matrix CI `.github/workflows/ci.yml`
+  is READY).
+- The Rust section of the root CLAUDE.md/README.md (THIS section).
+- Waterfall frequency zoom (0–2.76 kHz) — ADDED.
 
-## Konuşma dili
+## Language
 
-Kullanıcıyla tüm konuşma Türkçe yürütüldü, teknik terimler genelde
-Türkçe+İngilizce karışık kullanıldı (ör. "airtime", "backoff",
-"multipath" gibi terimler olduğu gibi bırakıldı). Yeni oturumda da
-aynı dil/üslupla devam edilmesi bekleniyor. Kullanıcı gerçekten
-kod çalıştırıp test ediyor, sonuçları/log'ları paylaşıp gerçek
-hataları bildiriyor - yani bu proje "kağıt üzerinde" değil, aktif
-olarak elle test edilen bir proje. Bir sonraki oturumda muhtemelen
-ya yeni bir gerçek hata bildirecek, ya yukarıdaki "sonraki adımlar"
-listesinden birine geçmek isteyecek, ya da gerçek ses kartı/SDR
-entegrasyonuna geçmek isteyecek.
+The original conversation with the user was conducted in Turkish, with
+technical terms usually left in English (e.g. "airtime", "backoff",
+"multipath"). The codebase, comments and documentation have since been
+translated to English throughout. The user really runs and tests the code,
+shares results/logs and reports real bugs — so this project is not "on
+paper", it is actively tested by hand. In a later session the user will
+likely either report a new real bug, move on to one of the "next steps" in
+the list above, or move on to real sound-card/SDR integration.

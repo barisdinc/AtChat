@@ -1,6 +1,6 @@
 //! `channel_server.py::handle_client` portu — TCP soketlerini [`ChannelCore`]'a
-//! köprüler. Tel formatı `channel_server.py` ile birebir olduğundan Python
-//! `client.py` / `monitor.py` bu sunucuya bağlanabilir.
+//! Because the wire format matches `channel_server.py` exactly, the Python
+//! `client.py` / `monitor.py` can connect to this server.
 
 use std::sync::Arc;
 
@@ -18,7 +18,7 @@ pub async fn serve(listener: TcpListener, core: Arc<ChannelCore>) -> anyhow::Res
         let core = Arc::clone(&core);
         tokio::spawn(async move {
             if let Err(e) = handle_conn(stream, core).await {
-                tracing::debug!("bağlantı bitti ({peer}): {e}");
+                tracing::debug!("connection ended ({peer}): {e}");
             }
         });
     }
@@ -31,14 +31,14 @@ async fn handle_conn(stream: TcpStream, core: Arc<ChannelCore>) -> anyhow::Resul
 
     let hello = netproto::read_json(&mut reader)
         .await?
-        .ok_or_else(|| anyhow!("HELLO'dan önce EOF"))?;
+        .ok_or_else(|| anyhow!("EOF before HELLO"))?;
     if hello.get("cmd").and_then(|v| v.as_str()) != Some("HELLO") {
-        bail!("ilk mesaj HELLO değil");
+        bail!("the first message is not HELLO");
     }
     let callsign = hello
         .get("callsign")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| anyhow!("HELLO içinde callsign yok"))?
+        .ok_or_else(|| anyhow!("no callsign in HELLO"))?
         .to_string();
 
     let (id, mut rx) = core.register(&callsign);

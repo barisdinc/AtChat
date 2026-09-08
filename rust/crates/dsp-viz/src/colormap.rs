@@ -1,5 +1,5 @@
-//! 256 girişli colormap LUT'ları. Anchor noktalarından parça-parça lineer
-//! interpolasyonla bir kez üretilir, `OnceLock` ile önbelleklenir.
+//! 256-entry colormap LUTs. Built once by piecewise-linear interpolation
+//! between anchor points, cached with `OnceLock`.
 
 use std::sync::OnceLock;
 
@@ -24,7 +24,7 @@ impl Colormap {
             Colormap::Viridis => "Viridis",
             Colormap::Inferno => "Inferno",
             Colormap::Turbo => "Turbo",
-            Colormap::Gray => "Gri",
+            Colormap::Gray => "Gray",
         }
     }
 
@@ -37,7 +37,7 @@ impl Colormap {
         }
     }
 
-    /// `t` 0..1 aralığına kırpılır.
+    /// `t` is clamped to the 0..1 range.
     pub fn sample(self, t: f32) -> [u8; 3] {
         let idx = (t.clamp(0.0, 1.0) * 255.0).round() as usize;
         self.lut()[idx.min(255)]
@@ -136,7 +136,7 @@ mod tests {
             let hi = cm.sample(1.0);
             assert_ne!(lo, hi, "{}", cm.name());
         }
-        // Gri: parlaklık monoton artmalı.
+        // Gray: brightness must increase monotonically.
         let g = Colormap::Gray.lut();
         for w in g.windows(2) {
             assert!(w[1][0] >= w[0][0]);

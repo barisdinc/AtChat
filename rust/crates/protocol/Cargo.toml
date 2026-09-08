@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "NET istasyon protokol mantığı: master seçimi, roster, sohbet, ARQ (client.py portu)"
+description = "NET station protocol logic: master election, roster, chat, ARQ (a port of client.py)"
 
 [dependencies]
 netproto.workspace = true

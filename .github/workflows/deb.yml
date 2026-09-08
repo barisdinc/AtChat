@@ -1,11 +1,12 @@
 name: Debian paketleri
 
-# cargo-dist .deb üretmiyor. Bu iş akışı "Release" (cargo-dist) iş akışı bir
-# etiket için başarıyla bitince çalışır, cargo-deb ile atchat-gui +
-# atchat-channeld .deb'lerini üretip aynı GitHub Release'e ekler.
+# cargo-dist does not produce .deb packages. This workflow runs after the
+# "Release" (cargo-dist) workflow finishes successfully for a tag, builds the
+# atchat-gui + atchat-channeld .deb packages with cargo-deb and attaches them
+# to the same GitHub Release.
 #
-# Not: release:published olayı GITHUB_TOKEN ile yayınlanan sürümlerde
-# tetiklenmediği için workflow_run kullanıyoruz.
+# Note: we use workflow_run because the release:published event does not fire
+# for releases published with GITHUB_TOKEN.
 
 on:
   workflow_run:
@@ -14,7 +15,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release etiketi (ör. v0.1.0)"
+        description: "Release tag (e.g. v0.1.0)"
         required: true
 
 permissions:
@@ -41,7 +42,7 @@ jobs:
         with:
           ref: ${{ steps.tag.outputs.tag }}
 
-      - name: Sistem bağımlılıkları (eframe/glow + cpal/ALSA)
+      - name: System dependencies (eframe/glow + cpal/ALSA)
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -58,13 +59,13 @@ jobs:
       - name: cargo-deb kur
         run: cargo install cargo-deb --locked
 
-      - name: .deb üret
+      - name: Build .deb
         run: |
           cargo deb -p atchat-channeld
           cargo deb -p atchat-gui
           ls -la target/debian/
 
-      - name: Release'e yükle
+      - name: Upload to the Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh release upload "${{ steps.tag.outputs.tag }}" target/debian/*.deb --clobber

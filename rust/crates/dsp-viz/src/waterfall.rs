@@ -1,5 +1,5 @@
-//! Kayan spektrogram — dB satırlarını yoğunluk (0..255) satırlarına çevirir,
-//! sabit yükseklikte bir halka tutar, RGB piksel buffer üretir.
+//! A scrolling spectrogram — turns dB rows into intensity (0..255) rows,
+//! keeps a fixed-height ring, and produces an RGB pixel buffer.
 
 use std::collections::VecDeque;
 
@@ -35,8 +35,8 @@ impl Waterfall {
         self.rows.clear();
     }
 
-    /// Bir dB spektrum satırı ekle. `db` uzunluğu `width`'ten farklıysa lineer
-    /// yeniden örneklenir. En eski satır düşer.
+    /// Push one dB spectrum row. If `db`'s length differs from `width` it is
+    /// linearly resampled. The oldest row is dropped.
     pub fn push_row_db(&mut self, db: &[f32], floor_db: f32, ceil_db: f32) {
         let mut row = vec![0u8; self.width];
         if !db.is_empty() {
@@ -62,8 +62,9 @@ impl Waterfall {
         self.rows.push_back(row);
     }
 
-    /// RGB8 piksel buffer (row-major, `width*height*3`). `newest_on_top` true
-    /// ise en yeni satır y=0'da; boş satırlar taban rengiyle (colormap[0]).
+    /// An RGB8 pixel buffer (row-major, `width*height*3`). If `newest_on_top`
+    /// is true the newest row is at y=0; empty rows use the base colour
+    /// (colormap[0]).
     pub fn to_rgb(&self, cmap: Colormap, newest_on_top: bool) -> Vec<u8> {
         let lut = cmap.lut();
         let base = lut[0];
@@ -72,17 +73,17 @@ impl Waterfall {
         let pad = self.height - filled;
 
         for y in 0..self.height {
-            // Görüntü satırı y -> hangi veri satırı?
-            // Dolu satırlar en yeni en sonda; üstte `pad` boş satır.
+            // Image row y -> which data row?
+            // Filled rows have the newest last; `pad` empty rows on top.
             let row_ref: Option<&Vec<u8>> = if newest_on_top {
-                // y=0 en yeni
+                // y=0 is the newest
                 if y < filled {
                     self.rows.get(filled - 1 - y)
                 } else {
                     None
                 }
             } else {
-                // y=height-1 en yeni; üstte boşluk
+                // y=height-1 is the newest; the gap is on top
                 if y >= pad {
                     self.rows.get(y - pad)
                 } else {
@@ -124,17 +125,17 @@ mod tests {
     #[test]
     fn ring_is_bounded_and_newest_on_top() {
         let mut wf = Waterfall::new(8, 4);
-        // 6 satır: ilk ikisi düşmeli.
+        // 6 rows: the first two should be dropped.
         for k in 0..6 {
             let level = -100.0 + k as f32 * 10.0;
             wf.push_row_db(&[level; 8], -100.0, 0.0);
         }
         assert_eq!(wf.rows_filled(), 4);
         let rgb = wf.to_rgb(Colormap::Gray, true);
-        // En yeni satır (y=0) en parlak (level = -50 -> ~0.5 -> ~128).
+        // The newest row (y=0) is the brightest (level = -50 -> ~0.5 -> ~128).
         let top = rgb[0];
         let second = rgb[8 * 3];
-        assert!(top > second, "en yeni satır en üstte ve en parlak olmalı");
+        assert!(top > second, "the newest row should be on top and the brightest");
     }
 
     #[test]

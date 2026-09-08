@@ -1,14 +1,14 @@
-//! Python `modem.py` ile çapraz-doğrulama.
+//! Cross-validation against the Python `modem.py`.
 //!
-//! 1. `tests/vectors/*.i16` — `rust/tools/dump_vectors.py` ile üretilmiş
-//!    Python modülasyon çıktıları; Rust demodülatörü bunları bit-birebir
-//!    çözmeli.
-//! 2. Kökteki `ornek_net_sesi.wav` — gerçek protokol çerçevelerinin art
-//!    arda modüle edilmiş hâli; enerji-kapılı segmentasyon + demod ile
-//!    çerçeve tipleri geri okunmalı.
+//! 1. `tests/vectors/*.i16` — Python modulation outputs produced by
+//!    `rust/tools/dump_vectors.py`; the Rust demodulator must decode them
+//!    bit-for-bit.
+//! 2. `ornek_net_sesi.wav` at the repo root — real protocol frames modulated
+//!    back to back; energy-gated segmentation + demod must read the frame
+//!    types back.
 //!
-//! Ters yön (Rust modüle -> Python demodüle) `rust/tools/check_vectors.py`
-//! ile elle doğrulanır (numpy gerektirir).
+//! The reverse direction (Rust modulate -> Python demodulate) is checked by
+//! hand with `rust/tools/check_vectors.py` (it needs numpy).
 
 use std::path::PathBuf;
 
@@ -31,7 +31,7 @@ fn python_vectors_decode_bit_exact() {
     let dir = manifest_dir().join("tests/vectors");
     let manifest_path = dir.join("manifest.json");
     let raw = std::fs::read_to_string(&manifest_path)
-        .expect("manifest.json yok — önce `python3 rust/tools/dump_vectors.py` çalıştırın");
+        .expect("no manifest.json — run `python3 rust/tools/dump_vectors.py` first");
     let manifest: serde_json::Value = serde_json::from_str(&raw).unwrap();
     let entries = manifest.as_array().unwrap();
     assert!(!entries.is_empty());
@@ -39,20 +39,20 @@ fn python_vectors_decode_bit_exact() {
     let m = Modem::new();
     for e in entries {
         let file = e["file"].as_str().unwrap();
-        // Mod, demod tarafından header'dan otomatik algılanır; burada yalnız
-        // manifest bütünlüğü için okunur.
+        // The mode is detected automatically from the header by the demod;
+        // here it is only read for manifest integrity.
         assert!(matches!(e["mode"].as_str(), Some("BPSK" | "QPSK")));
         let want = hex_decode(e["payload_hex"].as_str().unwrap());
         let samples = read_i16_le(&dir.join(file));
         let got = m
             .demodulate(&samples)
-            .unwrap_or_else(|| panic!("{file}: demod None döndü"));
-        assert_eq!(got, want, "{file}: payload eşleşmedi");
+            .unwrap_or_else(|| panic!("{file}: demod returned None"));
+        assert_eq!(got, want, "{file}: payload did not match");
     }
 }
 
-/// Enerjiye göre burst'lere böl (basit VOX). Gerçek monitör de ileride
-/// buna benzer bir segmentasyona ihtiyaç duyacak.
+/// Split into bursts by energy (a simple VOX). A real monitor will need
+/// similar segmentation in the future.
 fn segment_bursts(x: &[i16]) -> Vec<Vec<i16>> {
     const THRESH: i32 = 150;
     const MAX_GAP: usize = 160; // ~20 ms @ 8 kHz
@@ -87,7 +87,7 @@ fn sample_wav_frames_decode() {
     let mut reader = match hound::WavReader::open(&wav_path) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("ornek_net_sesi.wav açılamadı ({e}) — atlanıyor");
+            eprintln!("could not open ornek_net_sesi.wav ({e}) — skipping");
             return;
         }
     };
@@ -107,10 +107,10 @@ fn sample_wav_frames_decode() {
             }
         }
     }
-    eprintln!("çözülen çerçeveler: {decoded_types:?}");
+    eprintln!("decoded frames: {decoded_types:?}");
     assert!(
         decoded_types.len() >= 4,
-        "en az 4 çerçeve beklenirdi, {} çözüldü",
+        "expected at least 4 frames, decoded {}",
         decoded_types.len()
     );
     assert!(decoded_types.iter().any(|t| t == "BEACON"));

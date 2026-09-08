@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
-description = "Monitör görselleştirme DSP'si: scope zarfı, spektrum analizörü (Hann+Welch+peak), waterfall + colormap. GUI çatısından bağımsız."
+description = "Monitor-visualisation DSP: scope envelope, spectrum analyser (Hann+Welch+peak), waterfall + colormap. Independent of any GUI framework."
 
 [dependencies]
 num-complex.workspace = true

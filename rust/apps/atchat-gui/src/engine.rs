@@ -1,11 +1,11 @@
-//! Motor: ayrı bir thread'de tokio runtime çalıştırır. Dört mod:
-//!   - `spawn_all_in_one` — in-proc kanal + in-proc istasyonlar + monitör tap
-//!   - `spawn_channel_host` — in-proc kanal + TCP sunucu (başka process'ler bağlanır)
-//!   - `spawn_client` — TCP ile kanala bağlanan istasyonlar (çoklu pencere)
-//!   - `spawn_monitor` — TCP ile kanalı pasif dinleyen monitör
+//! The engine: runs a tokio runtime on its own thread. Four modes:
+//!   - `spawn_all_in_one` — in-proc channel + in-proc stations + monitor tap
+//!   - `spawn_channel_host` — in-proc channel + TCP server (other processes connect)
+//!   - `spawn_client` — stations connected to the channel over TCP (multi-window)
+//!   - `spawn_monitor` — a monitor passively listening to the channel over TCP
 //!
-//! GUI ↔ motor: komutlar `mpsc` ile içeri, durum `Arc<Mutex<EngineSnapshot>>`
-//! ile dışarı, monitör örnekleri paylaşımlı halka tamponlarına.
+//! GUI ↔ engine: commands in via `mpsc`, state out via `Arc<Mutex<EngineSnapshot>>`,
+//! monitor samples into shared ring buffers.
 
 use std::collections::{BTreeMap, VecDeque};
 use std::path::PathBuf;
@@ -23,7 +23,7 @@ use tokio::sync::broadcast;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::task::JoinHandle;
 
-pub const GUI_RING_CAP: usize = 24_000; // ~3 sn @ 8 kHz
+pub const GUI_RING_CAP: usize = 24_000; // ~3 s @ 8 kHz
 pub const AUDIO_RING_CAP: usize = 32_000;
 const MONITOR_HOP: usize = 160; // 20 ms @ 8 kHz
 
@@ -41,7 +41,7 @@ pub enum EngineCmd {
         dst: String,
         text: String,
     },
-    /// Bağlı TÜM istasyonlar aynı mesajı `dst`'e gönderir.
+    /// EVERY connected station sends the same message to `dst`.
     ChatAll {
         dst: String,
         text: String,
@@ -51,7 +51,7 @@ pub enum EngineCmd {
         path: PathBuf,
         dst: String,
     },
-    /// Bağlı TÜM istasyonlar aynı dosyayı `dst`'e gönderir.
+    /// EVERY connected station sends the same file to `dst`.
     SendFileAll {
         path: PathBuf,
         dst: String,
@@ -63,30 +63,30 @@ pub enum EngineCmd {
         callsign: String,
     },
     SetChannel(ChannelConfig),
-    /// Otomatik sohbet: rastgele bir istasyon her `interval_ms`'de ALL'a yazar.
+    /// Auto-chat: a random station writes to ALL every `interval_ms`.
     SetAutoChat {
         enabled: bool,
         interval_ms: u64,
     },
-    /// İç kullanım — otomatik sohbet zamanlayıcısının tetiklediği tik.
+    /// Internal — a tick fired by the auto-chat timer.
     AutoTick,
 }
 
 const AUTO_PHRASES: &[&str] = &[
     "test test",
-    "sinyal 59",
+    "signal 59",
     "roger",
     "QSL",
-    "kanal nasıl?",
-    "waterfall temiz",
-    "beklemede",
-    "grup çağrısı",
-    "buradayım",
-    "kopyala",
-    "anlaşıldı",
+    "how is the channel?",
+    "waterfall is clean",
+    "standing by",
+    "group call",
+    "I am here",
+    "copy that",
+    "understood",
     "10-4",
-    "sıcaklık normal",
-    "rapor bekliyorum",
+    "temperature normal",
+    "waiting for a report",
 ];
 
 #[derive(Clone)]
@@ -98,7 +98,7 @@ pub struct ChatLine {
     pub own: bool,
 }
 
-/// Havadan gelip (ya da bu istasyonca gönderilip) resim olarak çözülen dosya.
+/// A file received over the air (or sent by this station) that decoded as an image.
 #[derive(Clone)]
 pub struct RecvImage {
     pub from: String,
@@ -107,12 +107,13 @@ pub struct RecvImage {
     pub width: usize,
     pub height: usize,
     pub rgba: Arc<Vec<u8>>, // width*height*4
-    /// true -> bu istasyon gönderdi, false -> havadan geldi.
+    /// true -> this station sent it, false -> it came over the air.
     pub own: bool,
 }
 
-/// Bir resmi NET listesine ekle; aynı `(from, filename, w, h)` son satırlarda
-/// varsa (çok yerel alıcı / gönderen+alan aynı process) tekrar etme.
+/// Add an image to the NET list; do not repeat if the same `(from, filename,
+/// w, h)` is in the recent entries (many local receivers / sender+receiver in
+/// the same process).
 fn push_image(images: &Mutex<Vec<RecvImage>>, img: RecvImage) {
     let mut list = images.lock().unwrap();
     let dup = list.iter().rev().take(8).any(|i| {
@@ -129,7 +130,7 @@ fn push_image(images: &Mutex<Vec<RecvImage>>, img: RecvImage) {
     }
 }
 
-/// `path`'i oku, resimse `push_image` ile ekle (arka planda).
+/// Read `path`; if it is an image, add it with `push_image` (in the background).
 fn try_add_image(
     images: Arc<Mutex<Vec<RecvImage>>>,
     from: String,
@@ -142,7 +143,7 @@ fn try_add_image(
             return;
         };
         let Ok(img) = image::load_from_memory(&bytes) else {
-            return; // resim değil -> sessizce yok say
+            return; // not an image -> silently ignore
         };
         let rgba = img.to_rgba8();
         let (w, h) = (rgba.width() as usize, rgba.height() as usize);
@@ -161,7 +162,7 @@ fn try_add_image(
     });
 }
 
-/// NET sekmesinin paylaşımlı durumu (sohbet + resimler).
+/// The NET tab's shared state (chat + images).
 #[derive(Clone)]
 struct NetShared {
     chat: Arc<Mutex<VecDeque<ChatLine>>>,
@@ -180,7 +181,7 @@ impl NetShared {
 fn file_name_of(p: &std::path::Path) -> String {
     p.file_name()
         .and_then(|s| s.to_str())
-        .unwrap_or("dosya")
+        .unwrap_or("file")
         .to_string()
 }
 
@@ -210,12 +211,12 @@ pub struct EngineSnapshot {
     pub channel_log: Vec<String>,
     pub monitor_decodes: Vec<String>,
     pub stations: Vec<StationView>,
-    /// Tüm istasyonların gönderdiği sohbet, kronolojik ve birleşik (NET sekmesi).
+    /// Chat sent by every station, chronological and merged (the NET tab).
     pub net_chat: Vec<ChatLine>,
-    /// Havadan gelen ve resim olarak çözülen dosyalar (NET sekmesi).
+    /// Files received over the air that decoded as images (the NET tab).
     pub images: Vec<RecvImage>,
     pub auto_chat_on: bool,
-    /// Bu motorun bağlı olduğu adres (client/monitör modları).
+    /// The address this engine is connected to (client/monitor modes).
     pub link_addr: Option<String>,
 }
 
@@ -308,7 +309,7 @@ impl EngineHandle {
 }
 
 // ------------------------------------------------------------------ //
-// İstasyon yönetimi (in-proc / TCP fark etmez — sadece Connector değişir)
+// Station management (in-proc / TCP does not matter — only the Connector changes)
 // ------------------------------------------------------------------ //
 
 struct StationSlot<C: Connector> {
@@ -354,9 +355,9 @@ fn push_own_chat<C: Connector>(
     slot.station.chat_bg(text, dst);
 }
 
-/// Gelen bir sohbeti birleşik akışa ekle — aynı mesaj birden çok yerel
-/// istasyonca alınırsa (ve kendi gönderdiysem) tek satır kalsın diye
-/// son satırlara karşı tekilleştirir.
+/// Add an incoming chat to the merged stream — deduplicated against the
+/// recent lines so that if the same message is received by several local
+/// stations (and I sent it myself) only one line remains.
 fn push_recv_chat(net_chat: &Mutex<VecDeque<ChatLine>>, line: ChatLine) {
     let mut nc = net_chat.lock().unwrap();
     let dup = nc
@@ -403,7 +404,7 @@ async fn add_station<C: Connector>(
                             let line = ChatLine {
                                 from,
                                 dst: if private {
-                                    "(özel)".into()
+                                    "(private)".into()
                                 } else {
                                     "ALL".into()
                                 },
@@ -440,7 +441,7 @@ async fn add_station<C: Connector>(
                 },
             );
         }
-        Err(e) => tracing::error!("istasyon eklenemedi: {e}"),
+        Err(e) => tracing::error!("could not add the station: {e}"),
     }
 }
 
@@ -572,12 +573,12 @@ async fn handle_station_cmd<C, F>(
                 push_own_chat(sl, net_chat, sl.station.callsign(), "ALL", phrase);
             }
         }
-        EngineCmd::SetChannel(_) => {} // yalnız kanalı barındıran motor işler
+        EngineCmd::SetChannel(_) => {} // only the channel-hosting engine handles this
     }
 }
 
 // ------------------------------------------------------------------ //
-// Ortak arka plan görevleri
+// Shared background tasks
 // ------------------------------------------------------------------ //
 
 fn spawn_channel_log_task(
@@ -591,8 +592,8 @@ fn spawn_channel_log_task(
             match ev.recv().await {
                 Ok(ChannelEvent::Decoded { duration, summary }) => {
                     let line = match summary {
-                        Some(s) => format!("{s} | {duration:.2}sn | çözüldü"),
-                        None => format!("{duration:.2}sn | çözülemedi"),
+                        Some(s) => format!("{s} | {duration:.2}s | decoded"),
+                        None => format!("{duration:.2}s | undecoded"),
                     };
                     push_cap(&mon_dec, line, 120);
                 }
@@ -635,22 +636,22 @@ fn spawn_monitor_tap_task(
 fn fmt_channel_event(e: &ChannelEvent) -> String {
     match e {
         ChannelEvent::Joined { callsign, active } => {
-            format!("{callsign} bağlandı ({active} aktif)")
+            format!("{callsign} joined ({active} active)")
         }
-        ChannelEvent::Left { callsign, active } => format!("{callsign} ayrıldı ({active} aktif)"),
+        ChannelEvent::Left { callsign, active } => format!("{callsign} left ({active} active)"),
         ChannelEvent::TxGranted {
             src,
             n_samples,
             duration,
-        } => format!("{src} yayında | {n_samples} örnek | {duration:.2}sn"),
+        } => format!("{src} on air | {n_samples} samples | {duration:.2}s"),
         ChannelEvent::TxDenied { src, retry_after } => {
-            format!("{src} MEŞGUL | retry {retry_after:.2}sn")
+            format!("{src} BUSY | retry {retry_after:.2}s")
         }
         ChannelEvent::Delivered { .. } | ChannelEvent::Decoded { .. } => String::new(),
     }
 }
 
-/// Bir burst'ü 20 ms'lik parçalarla gerçek zamanda halka tamponlarına akıtır.
+/// Streams a burst into the ring buffers in real time in 20 ms chunks.
 async fn paced_feed(
     samples: Vec<i16>,
     gui_ring: Arc<Mutex<VecDeque<i16>>>,
@@ -671,7 +672,7 @@ async fn paced_feed(
 }
 
 // ------------------------------------------------------------------ //
-// Modlar
+// Modes
 // ------------------------------------------------------------------ //
 
 async fn engine_all_in_one(mut s: Shared, repaint: Box<dyn Fn() + Send>) {
@@ -736,10 +737,10 @@ async fn engine_channel_host(mut s: Shared, repaint: Box<dyn Fn() + Send>, port:
     let addr = format!("127.0.0.1:{port}");
     match tokio::net::TcpListener::bind(&addr).await {
         Ok(listener) => {
-            push_cap(&ch_log, format!("dinleniyor: {addr}"), 200);
+            push_cap(&ch_log, format!("listening on: {addr}"), 200);
             tokio::spawn(channel::tcp_server::serve(listener, Arc::clone(&core)));
         }
-        Err(e) => push_cap(&ch_log, format!("PORT AÇILAMADI {addr}: {e}"), 200),
+        Err(e) => push_cap(&ch_log, format!("COULD NOT OPEN PORT {addr}: {e}"), 200),
     }
     s.snapshot.lock().unwrap().link_addr = Some(addr);
 
@@ -814,7 +815,7 @@ async fn engine_monitor(s: Shared, repaint: Box<dyn Fn() + Send>, addr: String) 
             loop {
                 match TcpConnector::connect_once(&addr, &call).await {
                     Ok((_tx, mut rx)) => {
-                        push_cap(&md, format!("bağlandı: {addr}"), 120);
+                        push_cap(&md, format!("connected: {addr}"), 120);
                         while let Some(msg) = rx.recv().await {
                             let ServerMsg::RxAudio { audio_b64 } = msg else {
                                 continue;
@@ -837,9 +838,9 @@ async fn engine_monitor(s: Shared, repaint: Box<dyn Fn() + Send>, addr: String) 
                             });
                             match summary {
                                 Some(t) => {
-                                    push_cap(&md, format!("{t} | {dur:.2}sn | çözüldü"), 120)
+                                    push_cap(&md, format!("{t} | {dur:.2}s | decoded"), 120)
                                 }
-                                None => push_cap(&md, format!("{dur:.2}sn | çözülemedi"), 120),
+                                None => push_cap(&md, format!("{dur:.2}s | undecoded"), 120),
                             }
                             tokio::spawn(paced_feed(
                                 samples,
@@ -848,9 +849,9 @@ async fn engine_monitor(s: Shared, repaint: Box<dyn Fn() + Send>, addr: String) 
                                 Arc::clone(&ae),
                             ));
                         }
-                        push_cap(&md, "bağlantı koptu, yeniden deneniyor…".into(), 120);
+                        push_cap(&md, "connection dropped, retrying…".into(), 120);
                     }
-                    Err(e) => push_cap(&md, format!("bağlanılamadı ({e}), yeniden…"), 120),
+                    Err(e) => push_cap(&md, format!("could not connect ({e}), retrying…"), 120),
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
@@ -900,23 +901,23 @@ mod tests {
         h.send(EngineCmd::Chat {
             callsign: "TA1ABC".into(),
             dst: "ALL".into(),
-            text: "motor testi".into(),
+            text: "engine test".into(),
         });
         assert!(
             wait_until(&h, 20, |s| {
                 s.stations
                     .iter()
                     .find(|v| v.snap.callsign == "TA2DEF")
-                    .map(|v| v.chat.iter().any(|c| c.text == "motor testi" && !c.own))
+                    .map(|v| v.chat.iter().any(|c| c.text == "engine test" && !c.own))
                     .unwrap_or(false)
             }),
-            "TA2DEF sohbeti motor üzerinden almalıydı"
+            "TA2DEF should receive the chat through the engine"
         );
         assert!(wait_until(&h, 5, |s| !s.monitor_decodes.is_empty()));
         assert!(wait_until(&h, 3, |s| s
             .net_chat
             .iter()
-            .any(|c| c.from == "TA1ABC" && c.text == "motor testi")));
+            .any(|c| c.from == "TA1ABC" && c.text == "engine test")));
     }
 
     #[test]
@@ -932,13 +933,13 @@ mod tests {
 
         h.send(EngineCmd::ChatAll {
             dst: "ALL".into(),
-            text: "toplu selam".into(),
+            text: "group hello".into(),
         });
         assert!(wait_until(&h, 5, |s| {
             let senders: std::collections::BTreeSet<_> = s
                 .net_chat
                 .iter()
-                .filter(|c| c.text == "toplu selam")
+                .filter(|c| c.text == "group hello")
                 .map(|c| c.from.as_str())
                 .collect();
             senders.len() == 3
@@ -962,7 +963,7 @@ mod tests {
     fn received_png_shows_in_images() {
         let dir = std::env::temp_dir().join(format!("atchat_img_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let png = dir.join("kart.png");
+        let png = dir.join("card.png");
         let mut img = image::RgbaImage::new(8, 6);
         for p in img.pixels_mut() {
             *p = image::Rgba([200, 40, 40, 255]);
@@ -984,15 +985,15 @@ mod tests {
             dst: "TA2DEF".into(),
         });
 
-        // Gönderen tarafında hemen görünür (own = true).
+        // Visible on the sender's side immediately (own = true).
         assert!(
             wait_until(&h, 8, |s| s.images.iter().any(|i| i.from == "TA1ABC"
                 && i.own
                 && i.width == 8
                 && i.height == 6)),
-            "gönderen kendi resmini NET'te görmeliydi"
+            "the sender should see its own image in NET"
         );
-        // Transfer da tamamlanır (alıcı zaten dedup'a takılır ama akış çalışır).
+        // The transfer also completes (the receiver hits the dedup, but the flow works).
         assert!(wait_until(&h, 45, |s| s.stations.iter().any(|v| v
             .snap
             .transfers_in
@@ -1003,7 +1004,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn channel_host_and_two_tcp_clients() {
-        // Kanalı barındıran motor + iki ayrı client motoru (TCP) -> sohbet.
+        // The channel-hosting engine + two separate client engines (TCP) -> chat.
         let port = 6400 + (std::process::id() % 200) as u16;
         let ch = EngineHandle::spawn_channel_host(egui::Context::default(), port);
         std::thread::sleep(Duration::from_millis(600));
@@ -1025,25 +1026,25 @@ mod tests {
         a.send(EngineCmd::Chat {
             callsign: "TA1ABC".into(),
             dst: "ALL".into(),
-            text: "tcp merhaba".into(),
+            text: "tcp hello".into(),
         });
         assert!(
             wait_until(&b, 20, |s| s
                 .stations
                 .first()
-                .map(|v| v.chat.iter().any(|c| c.text == "tcp merhaba" && !c.own))
+                .map(|v| v.chat.iter().any(|c| c.text == "tcp hello" && !c.own))
                 .unwrap_or(false)),
-            "B (ayrı process benzeri) TCP kanaldan sohbeti almalıydı"
+            "B (like a separate process) should receive the chat from the TCP channel"
         );
-        // NET akışında da görünmeli (kendi mesajı olmasa bile).
+        // It should also appear in the NET stream (even though it is not its own message).
         assert!(
             wait_until(&b, 5, |s| s
                 .net_chat
                 .iter()
-                .any(|c| c.from == "TA1ABC" && c.text == "tcp merhaba" && !c.own)),
-            "uzak istasyonun mesajı B'nin NET akışında görünmeliydi"
+                .any(|c| c.from == "TA1ABC" && c.text == "tcp hello" && !c.own)),
+            "the remote station's message should appear in B's NET stream"
         );
-        // Kanal motoru trafiği görmüş olmalı.
+        // The channel engine should have seen the traffic.
         assert!(wait_until(&ch, 5, |s| !s.monitor_decodes.is_empty()
             || !s.channel_log.is_empty()));
     }

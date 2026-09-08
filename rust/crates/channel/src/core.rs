@@ -1,13 +1,14 @@
-//! `ChannelServer` portu — "kanalın fiziği". Protokol mantığı (master
-//! seçimi, ARQ, sohbet) İÇERMEZ; yalnız (1) yarı çift yönlü erişimi zorunlu
-//! kılar, (2) sesi (bozarak) tüm istasyonlara yayınlar.
+//! A port of `ChannelServer` — "the physics of the channel". It contains NO
+//! protocol logic (master election, ARQ, chat); it only (1) enforces
+//! half-duplex access and (2) broadcasts the audio (distorted) to every
+//! station.
 //!
-//! İki çıkış bus'ı:
-//!   - **protokol bus'ı**: bir aktarım = tek `RX_AUDIO` (istasyon demod'u
-//!     tam burst tamponu bekler — `client.py` ile aynı).
-//!   - **monitör tap**: aynı bozulmuş örnekler ~20 ms'lik hop'larla gerçek
-//!     zamanda akıtılır (boştayken sıfır). Scope / waterfall / cpal bunu
-//!     tüketir; protokole etkisi yoktur.
+//! Two output buses:
+//!   - **the protocol bus**: one transmission = one `RX_AUDIO` (the station's
+//!     demod waits for the whole burst buffer — the same as `client.py`).
+//!   - **the monitor tap**: the same distorted samples are streamed in real
+//!     time in ~20 ms hops (zero while idle). The scope / waterfall / cpal
+//!     consume this; it has no effect on the protocol.
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -24,12 +25,12 @@ use crate::config::{apply_channel, ChannelConfig, SAMPLE_RATE};
 const BASE64: base64::engine::general_purpose::GeneralPurpose =
     base64::engine::general_purpose::STANDARD;
 
-/// Monitör tap hop boyutu: 160 örnek @ 8 kHz = 20 ms.
+/// Monitor tap hop size: 160 samples @ 8 kHz = 20 ms.
 const MONITOR_CHUNK: usize = SAMPLE_RATE as usize / 50;
 
 pub type ClientId = u64;
 
-/// GUI'nin aktivite günlüğü için yayınlanan olaylar.
+/// Events published for the GUI's activity log.
 #[derive(Debug, Clone)]
 pub enum ChannelEvent {
     Joined {
@@ -53,16 +54,16 @@ pub enum ChannelEvent {
         src: String,
         n_samples: usize,
     },
-    /// Pasif "monitör" çözümü — teslim edilen (bozulmuş) burst demodüle edildi.
-    /// `monitor.py`'nin metin günlüğünün karşılığı.
+    /// Passive "monitor" decode — the delivered (distorted) burst was
+    /// demodulated. The equivalent of `monitor.py`'s text log.
     Decoded {
         duration: f64,
-        /// Çözülebildiyse `"TA1ABC -> ALL | CHAT"`, çözülemezse `None`.
+        /// `"TA1ABC -> ALL | CHAT"` if it decoded, `None` otherwise.
         summary: Option<String>,
     },
 }
 
-/// GUI'nin her karede okuyabileceği anlık kanal durumu.
+/// A channel snapshot the GUI can read every frame.
 #[derive(Debug, Clone)]
 pub struct ChannelSnapshot {
     pub busy: bool,
@@ -87,19 +88,19 @@ struct Inner {
 pub struct ChannelCore {
     inner: Mutex<Inner>,
     next_id: AtomicU64,
-    /// Teslim edilen burst sayacı (TEST hook'u `corrupt_burst_nums` için).
+    /// Delivered-burst counter (for the `corrupt_burst_nums` TEST hook).
     burst_count: AtomicU64,
     events: broadcast::Sender<ChannelEvent>,
     monitor: broadcast::Sender<Vec<i16>>,
-    /// Monitör pacer'ının gerçek zamanda boşalttığı "havadaki örnekler".
+    /// The "on-air samples" the monitor pacer drains in real time.
     airwaves: Mutex<VecDeque<i16>>,
-    /// Pasif monitör demodülatörü (`ChannelEvent::Decoded` için).
+    /// The passive monitor demodulator (for `ChannelEvent::Decoded`).
     decoder: modem::Modem,
 }
 
 impl ChannelCore {
-    /// Kanalı kurar ve monitör pacer görevini başlatır. Bir tokio runtime
-    /// içinden çağrılmalı.
+    /// Sets up the channel and starts the monitor pacer task. Must be called
+    /// from within a tokio runtime.
     pub fn spawn(cfg: ChannelConfig) -> Arc<Self> {
         let (events, _) = broadcast::channel(512);
         let (monitor, _) = broadcast::channel(128);
@@ -140,18 +141,18 @@ impl ChannelCore {
         core
     }
 
-    // -- abonelikler ----------------------------------------------------
+    // -- subscriptions ------------------------------------------------
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<ChannelEvent> {
         self.events.subscribe()
     }
 
-    /// Sürekli 8 kHz i16 akışı (20 ms'lik `Vec<i16>` parçaları).
+    /// A continuous 8 kHz i16 stream (20 ms `Vec<i16>` chunks).
     pub fn subscribe_monitor(&self) -> broadcast::Receiver<Vec<i16>> {
         self.monitor.subscribe()
     }
 
-    // -- istemci kaydı ------------------------------------------------
+    // -- client registration ----------------------------------------
 
     pub fn register(&self, callsign: &str) -> (ClientId, mpsc::Receiver<ServerMsg>) {
         let (tx, rx) = mpsc::channel(512);
@@ -187,7 +188,7 @@ impl ChannelCore {
         }
     }
 
-    // -- ayar --------------------------------------------------------
+    // -- configuration ---------------------------------------------
 
     pub fn set_config(&self, cfg: ChannelConfig) {
         self.inner.lock().unwrap().cfg = cfg;
@@ -214,11 +215,11 @@ impl ChannelCore {
         }
     }
 
-    // -- aktarım ---------------------------------------------------
+    // -- transmission --------------------------------------------
 
-    /// `handle_transmit` + `deliver_after_delay` portu. Yarı çift yönlü
-    /// erişimi zorunlu kılar; kabul edilirse `duration` sonra bozulmuş sesi
-    /// TÜM istasyonlara (gönderen dahil) yayınlar.
+    /// A port of `handle_transmit` + `deliver_after_delay`. Enforces
+    /// half-duplex access; if granted, `duration` later it broadcasts the
+    /// distorted audio to EVERY station (the sender included).
     pub fn transmit(self: &Arc<Self>, id: ClientId, samples: Vec<i16>) {
         let n = samples.len();
         let duration = n as f64 / SAMPLE_RATE as f64;
@@ -256,24 +257,24 @@ impl ChannelCore {
 
         let burst_num = self.burst_count.fetch_add(1, Ordering::Relaxed) + 1;
 
-        // Bozulmayı BİR kez hesapla; hem monitör hem protokol aynı sesi duysun.
+        // Compute the distortion ONCE so the monitor and the protocol hear the same audio.
         let distorted = {
             let mut rng = rand::thread_rng();
             let mut d = apply_channel(&samples, &cfg, &mut rng);
             if cfg.corrupt_burst_nums.contains(&burst_num) {
-                // TEST hook'u: bu burst'ü tamamen sıfırla -> demod kesin başarısız.
+                // TEST hook: zero this burst entirely -> demod is guaranteed to fail.
                 d.iter_mut().for_each(|s| *s = 0);
             }
             Arc::new(d)
         };
 
-        // Monitör: hemen airwaves'e (pacer gerçek zamanda boşaltır).
+        // Monitor: straight into airwaves (the pacer drains it in real time).
         {
             let mut aw = self.airwaves.lock().unwrap();
             aw.extend(distorted.iter().copied());
         }
 
-        // Protokol: airtime sonunda tek RX_AUDIO.
+        // Protocol: one RX_AUDIO at the end of the airtime.
         let core = Arc::clone(self);
         tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs_f64(duration)).await;
@@ -294,7 +295,7 @@ impl ChannelCore {
                 let _ = t.try_send(msg.clone());
             }
 
-            // Pasif monitör çözümü (monitor.py karşılığı).
+            // The passive monitor decode (the monitor.py equivalent).
             let summary = core.decoder.demodulate(&distorted).and_then(|payload| {
                 serde_json::from_slice::<serde_json::Value>(&payload)
                     .ok()

@@ -12,7 +12,7 @@ installers = ["msi"]
 # Target platforms to build apps for (Rust target-triple syntax)
 targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
 
-# Linux runner'da eframe (glow/x11/wayland) + cpal (ALSA) için sistem paketleri
+# System packages for eframe (glow/x11/wayland) + cpal (ALSA) on the Linux runner
 [dist.dependencies.apt]
 libasound2-dev = '*'
 libudev-dev = '*'

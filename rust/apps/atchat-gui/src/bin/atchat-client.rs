@@ -1,13 +1,13 @@
-//! Client (client.py karşılığı) — bir kanala TCP ile bağlanan istasyon(lar).
-//! İSTEDİĞİNİZ KADAR örnek çalıştırın; her pencere kendi istasyonlarını yönetir.
+//! Client (the client.py counterpart) — station(s) that connect to a channel
+//! over TCP. Run AS MANY instances as you like; each window manages its own stations.
 
 use atchat_gui::{init_tracing, native_options, AppConfig, AtchatApp, EngineHandle, Tab};
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(about = "AtCHAT client — kanala TCP ile bağlanan istasyon GUI'si")]
+#[command(about = "AtCHAT client — a station GUI that connects to a channel over TCP")]
 struct Args {
-    /// Bağlanılacak kanal adresi.
+    /// The channel address to connect to.
     #[arg(long, default_value = "127.0.0.1:6000")]
     connect: String,
 }

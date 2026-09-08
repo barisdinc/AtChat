@@ -1,12 +1,12 @@
-//! `netproto.py` portu — AtCHAT ortak protokol sabitleri, çerçeve tipleri ve
-//! satır-bazlı JSON tel çerçeveleme.
+//! A port of `netproto.py` — AtCHAT's shared protocol constants, frame types
+//! and line-based JSON wire framing.
 //!
-//! Bu crate iki ayrı katmanı temsil eder:
-//!   1. **Tel mesajları** (`ClientMsg` / `ServerMsg`): istemci ↔ kanal sunucusu
-//!      arasında TCP üzerinden giden dış zarf. `channel_server.py` /
-//!      `client.py` ile birebir alan adları (Python ↔ Rust interop).
-//!   2. **Protokol çerçeveleri** (`Frame`): modüle edilen ses payload'ının
-//!      İÇİNDEKİ JSON. `client.py`'deki `handle_frame` ile birebir.
+//! This crate represents two distinct layers:
+//!   1. **Wire messages** (`ClientMsg` / `ServerMsg`): the outer envelope sent
+//!      over TCP between the client and the channel server. Field names match
+//!      `channel_server.py` / `client.py` exactly (Python ↔ Rust interop).
+//!   2. **Protocol frames** (`Frame`): the JSON INSIDE the modulated audio
+//!      payload. Matches `handle_frame` in `client.py` exactly.
 
 use std::io;
 
@@ -14,9 +14,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::io::{AsyncBufReadExt, AsyncWrite, AsyncWriteExt};
 
-// --- PHY katmanı parametreleri (netproto.py) --------------------------------
+// --- PHY-layer parameters (netproto.py) -----------------------------------
 
-/// Efektif bayt/sn (tasarım tablosu). `airtime()` için.
+/// Effective bytes/sec (the design table). For `airtime()`.
 pub fn rate_for(mode: &str) -> f64 {
     match mode {
         "BPSK" => 125.0,
@@ -26,18 +26,18 @@ pub fn rate_for(mode: &str) -> f64 {
     }
 }
 
-/// sn — her aktarımın sabit senkron+header maliyeti.
+/// Seconds — the fixed sync+header cost of every transmission.
 pub const PREAMBLE_OVERHEAD: f64 = 0.3;
 
-/// Bir çerçevenin "havada kalma süresi" (saniye). `netproto.airtime`.
+/// A frame's "time on air" (seconds). `netproto.airtime`.
 pub fn airtime(size_bytes: usize, mode: &str) -> f64 {
     PREAMBLE_OVERHEAD + size_bytes as f64 / rate_for(mode)
 }
 
-// --- Süper-çerçeve / NET zamanlama parametreleri ---------------------------
+// --- Super-frame / NET timing parameters --------------------------------
 
 pub const BEACON_INTERVAL: f64 = 8.0;
-pub const BEACON_TIMEOUT: f64 = BEACON_INTERVAL * 3.0; // 24 sn
+pub const BEACON_TIMEOUT: f64 = BEACON_INTERVAL * 3.0; // 24 s
 pub const LOST_TIMEOUT: f64 = 30.0;
 pub const REMOVE_TIMEOUT: f64 = 120.0;
 pub const BLOCK_SIZE: usize = 220;
@@ -46,7 +46,7 @@ pub const SAMPLE_RATE: u32 = 8000;
 
 // --- CRC -----------------------------------------------------------------
 
-/// `zlib.crc32(data) & 0xFFFFFFFF` ile birebir (IEEE CRC-32).
+/// Exactly `zlib.crc32(data) & 0xFFFFFFFF` (IEEE CRC-32).
 pub fn crc32(data: &[u8]) -> u32 {
     let mut h = crc32fast::Hasher::new();
     h.update(data);
@@ -67,7 +67,7 @@ pub fn b64d(s: &str) -> Result<Vec<u8>, base64::DecodeError> {
     B64.decode(s.as_bytes())
 }
 
-// --- Modülasyon modu ---------------------------------------------------
+// --- Modulation mode -------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Mode {
@@ -93,7 +93,7 @@ impl Mode {
     }
 }
 
-// --- Tel mesajları: istemci -> kanal sunucusu -----------------------------
+// --- Wire messages: client -> channel server ---------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "cmd")]
@@ -104,7 +104,7 @@ pub enum ClientMsg {
     TransmitAudio { audio_b64: String },
 }
 
-// --- Tel mesajları: kanal sunucusu -> istemci -----------------------------
+// --- Wire messages: channel server -> client ---------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -117,11 +117,11 @@ pub enum ServerMsg {
     RxAudio { audio_b64: String },
 }
 
-// --- Protokol çerçeveleri (modüle edilen payload içindeki JSON) ------------
+// --- Protocol frames (the JSON inside the modulated payload) --------------
 //
-// `client.py`'deki `handle_frame` ile birebir alan adları. Bilinmeyen bir
-// çerçeve tipi `Unknown`'a düşer (Python tarafı da bilinmeyeni sessizce
-// yok sayıyor).
+// Field names match `handle_frame` in `client.py` exactly. An unknown frame
+// type falls through to `Unknown` (the Python side also silently ignores
+// unknown ones).
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type")]
@@ -186,7 +186,7 @@ pub enum Frame {
 }
 
 impl Frame {
-    /// `frame.get("src")` — Python kolaylığı.
+    /// `frame.get("src")` — a Python convenience.
     pub fn src(&self) -> Option<&str> {
         match self {
             Frame::JoinRequest { src, .. }
@@ -215,7 +215,7 @@ impl Frame {
     }
 
     pub fn to_json_bytes(&self) -> Vec<u8> {
-        // `json.dumps(frame, ensure_ascii=False)` karşılığı.
+        // The equivalent of `json.dumps(frame, ensure_ascii=False)`.
         serde_json::to_vec(self).expect("frame serialize")
     }
 
@@ -224,9 +224,9 @@ impl Frame {
     }
 }
 
-// --- Satır bazlı JSON çerçeveleme (netproto.send_json / read_json) ---------
+// --- Line-based JSON framing (netproto.send_json / read_json) ------------
 
-/// `send_json`: tek satır JSON + `\n`, ardından flush.
+/// `send_json`: one line of JSON + `\n`, then flush.
 pub async fn write_json<W, T>(w: &mut W, obj: &T) -> io::Result<()>
 where
     W: AsyncWrite + Unpin,
@@ -238,7 +238,7 @@ where
     w.flush().await
 }
 
-/// `read_json`: bir satır oku. EOF'ta `Ok(None)`.
+/// `read_json`: read one line. `Ok(None)` at EOF.
 pub async fn read_json<R>(r: &mut R) -> io::Result<Option<Value>>
 where
     R: AsyncBufReadExt + Unpin,

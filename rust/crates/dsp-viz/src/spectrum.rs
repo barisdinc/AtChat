@@ -1,5 +1,5 @@
-//! Frekans domeni analizör: Hann pencere + Welch tarzı EWMA ortalama +
-//! peak-hold. dB cinsinden büyüklük döndürür.
+//! A frequency-domain analyser: Hann window + a Welch-style EWMA average +
+//! peak-hold. Returns magnitude in dB.
 
 use std::collections::VecDeque;
 use std::sync::Arc;
@@ -7,26 +7,26 @@ use std::sync::Arc;
 use num_complex::Complex64;
 use rustfft::{Fft, FftPlanner};
 
-/// dB tabanı — sessizlikte spektrumun dibi buraya oturur.
+/// The dB floor — in silence the bottom of the spectrum sits here.
 pub const DB_FLOOR: f32 = -120.0;
 
 pub struct SpectrumAnalyzer {
     fft: Arc<dyn Fft<f64>>,
     size: usize,
     window: Vec<f64>,
-    win_power: f64, // pencere normalizasyonu için Σ w²
+    win_power: f64, // Σ w² for window normalisation
     ring: VecDeque<f32>,
-    /// EWMA lineer güç (uzunluk size/2).
+    /// EWMA linear power (length size/2).
     avg: Vec<f32>,
-    /// dB peak-hold (uzunluk size/2).
+    /// dB peak-hold (length size/2).
     peak: Vec<f32>,
     alpha: f32,
     primed: bool,
 }
 
 impl SpectrumAnalyzer {
-    /// `size`: FFT boyutu (512 / 1024 / 2048). 2'nin kuvveti olması gerekmez
-    /// ama önerilir.
+    /// `size`: the FFT size (512 / 1024 / 2048). Need not be a power of two,
+    /// but it is recommended.
     pub fn new(size: usize) -> Self {
         let size = size.max(16);
         let mut planner = FftPlanner::<f64>::new();
@@ -58,8 +58,8 @@ impl SpectrumAnalyzer {
         self.size / 2
     }
 
-    /// EWMA yumuşatma katsayısı: 0 = anlık (yumuşatma yok), 1'e yaklaştıkça
-    /// daha ağır ortalama.
+    /// The EWMA smoothing factor: 0 = instantaneous (no smoothing); the
+    /// closer to 1, the heavier the averaging.
     pub fn set_averaging(&mut self, alpha: f32) {
         self.alpha = alpha.clamp(0.0, 0.99);
     }
@@ -72,8 +72,8 @@ impl SpectrumAnalyzer {
         bin as f32 * sample_rate as f32 / self.size as f32
     }
 
-    /// Yeni örnekleri besle. Halkada `size` kadar örnek birikince spektrum
-    /// yeniden hesaplanır (kayan pencere).
+    /// Feed new samples. Once `size` samples have accumulated in the ring the
+    /// spectrum is recomputed (a sliding window).
     pub fn feed_i16(&mut self, samples: &[i16]) {
         for &s in samples {
             if self.ring.len() == self.size {
@@ -105,7 +105,7 @@ impl SpectrumAnalyzer {
             .zip(self.peak.iter_mut())
             .zip(buf.iter().take(nb))
         {
-            // Tek taraflı güç (DC/Nyquist ×2 hariç — göreli gösterim için önemsiz).
+            // One-sided power (no ×2 for DC/Nyquist — irrelevant for a relative display).
             let p = (b.norm_sqr() * norm) as f32;
             *slot = if primed { a * *slot + (1.0 - a) * p } else { p };
             let db = 10.0 * (*slot).max(1e-12).log10();
@@ -116,7 +116,7 @@ impl SpectrumAnalyzer {
         self.primed = true;
     }
 
-    /// Güncel spektrum, dB (uzunluk = size/2). Henüz veri yoksa taban dolu.
+    /// The current spectrum, dB (length = size/2). Full of the floor when there is no data yet.
     pub fn magnitudes_db(&self) -> Vec<f32> {
         self.avg
             .iter()
@@ -124,13 +124,13 @@ impl SpectrumAnalyzer {
             .collect()
     }
 
-    /// Peak-hold izi, dB.
+    /// The peak-hold trace, dB.
     pub fn peak_db(&self) -> &[f32] {
         &self.peak
     }
 }
 
-/// dB değerini `[floor, ceil]` aralığında 0..1'e eşle (waterfall/çizim için).
+/// Map a dB value to 0..1 over `[floor, ceil]` (for the waterfall / drawing).
 pub fn db_to_unit(db: f32, floor_db: f32, ceil_db: f32) -> f32 {
     if ceil_db <= floor_db {
         return 0.0;
@@ -157,7 +157,7 @@ mod tests {
         let size = 1024;
         let mut sa = SpectrumAnalyzer::new(size);
         sa.set_averaging(0.0);
-        // 1500 Hz ton
+        // 1500 Hz tone
         for chunk in sine(1500.0, sr, size * 4).chunks(160) {
             sa.feed_i16(chunk);
         }
@@ -168,7 +168,7 @@ mod tests {
             .max_by(|a, b| a.1.partial_cmp(b.1).unwrap())
             .unwrap();
         let peak_hz = sa.bin_hz(peak_bin, sr);
-        assert!((peak_hz - 1500.0).abs() < 40.0, "tepe {peak_hz} Hz");
+        assert!((peak_hz - 1500.0).abs() < 40.0, "peak {peak_hz} Hz");
     }
 
     #[test]
@@ -194,13 +194,13 @@ mod tests {
         for _ in 0..40 {
             sa.feed_i16(&[0i16; 160]);
         }
-        // Peak-hold sessizlikte ASLA düşmez (yalnız yükselir).
+        // Peak-hold NEVER drops in silence (it only rises).
         for (after, before) in sa.peak_db().iter().zip(&peak_after_tone) {
-            assert!(*after >= *before - 1e-3, "peak düştü: {after} < {before}");
+            assert!(*after >= *before - 1e-3, "peak dropped: {after} < {before}");
         }
-        // Ton bittikten çok sonra bile tepe yüksek kalır.
+        // The peak stays high even long after the tone ends.
         assert!(sa.peak_db().iter().any(|&d| d > -40.0));
-        // Güncel spektrum ise tabana inmiş olmalı.
+        // The current spectrum, on the other hand, should have fallen to the floor.
         assert!(sa.magnitudes_db().iter().all(|&d| d < -100.0));
     }
 }

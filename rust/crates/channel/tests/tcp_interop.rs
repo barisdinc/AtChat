@@ -1,4 +1,4 @@
-//! TCP tel katmanı: `TcpConnector` <-> `tcp_server::serve` uçtan uca.
+//! The TCP wire layer: `TcpConnector` <-> `tcp_server::serve` end to end.
 //! (Python `client.py` <-> Rust sunucu interop'u elle: `rust/README.md`.)
 
 use std::time::Duration;
@@ -21,7 +21,7 @@ async fn tcp_link_transmit_reaches_peer_and_decodes() {
     tokio::time::sleep(Duration::from_millis(80)).await;
 
     let modem = Modem::new();
-    let payload = b"tcp uzerinden gercek OFDM";
+    let payload = b"real OFDM over tcp";
     let wave = modem.modulate(payload, Mode::Qpsk);
     a_tx.send(ClientMsg::TransmitAudio {
         audio_b64: channel::samples_to_b64(&wave),
@@ -33,7 +33,7 @@ async fn tcp_link_transmit_reaches_peer_and_decodes() {
         match timeout(Duration::from_secs(5), b_rx.recv()).await.unwrap() {
             Some(ServerMsg::RxAudio { audio_b64 }) => break audio_b64,
             Some(_) => continue,
-            None => panic!("bağlantı koptu"),
+            None => panic!("the connection dropped"),
         }
     };
     let samples = channel::b64_to_samples(&audio_b64).unwrap();
@@ -61,16 +61,16 @@ async fn tcp_second_transmitter_gets_channel_busy() {
     .unwrap();
     match timeout(Duration::from_secs(2), a_rx.recv()).await.unwrap() {
         Some(ServerMsg::TxGranted { .. }) => {}
-        other => panic!("TX_GRANTED beklenirken {other:?}"),
+        other => panic!("while waiting for TX_GRANTED {other:?}"),
     }
 
     b_tx.send(ClientMsg::TransmitAudio {
-        audio_b64: channel::samples_to_b64(&modem.modulate(b"kucuk", Mode::Bpsk)),
+        audio_b64: channel::samples_to_b64(&modem.modulate(b"small", Mode::Bpsk)),
     })
     .await
     .unwrap();
     match timeout(Duration::from_secs(2), b_rx.recv()).await.unwrap() {
         Some(ServerMsg::ChannelBusy { retry_after }) => assert!(retry_after > 0.0),
-        other => panic!("CHANNEL_BUSY beklenirken {other:?}"),
+        other => panic!("while waiting for CHANNEL_BUSY {other:?}"),
     }
 }

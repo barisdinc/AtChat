@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """
-Ters yön çapraz-doğrulama: Rust modülatör çıktılarını Python `modem.py`
-ile demodüle edip bit-birebir eşleşmeyi doğrular.
+The reverse-direction cross-check: demodulate the Rust modulator's outputs
+with the Python `modem.py` and verify a bit-for-bit match.
 
-Önce:  cargo run -p modem --example emit_vectors
-Sonra: python3 rust/tools/check_vectors.py
+First: cargo run -p modem --example emit_vectors
+Then:  python3 rust/tools/check_vectors.py
 """
 import json
 import os
@@ -24,7 +24,7 @@ VEC_DIR = os.path.join(PROJECT_ROOT, "rust", "target", "rust_vectors")
 def main():
     manifest_path = os.path.join(VEC_DIR, "manifest.json")
     if not os.path.exists(manifest_path):
-        sys.exit("manifest.json yok — önce: cargo run -p modem --example emit_vectors")
+        sys.exit("no manifest.json — first: cargo run -p modem --example emit_vectors")
     with open(manifest_path) as f:
         manifest = json.load(f)
 
@@ -40,8 +40,8 @@ def main():
         print(f"  {e['file']:20s} {e['mode']:4s}  {'OK' if ok else 'FAIL'}")
 
     if fails:
-        sys.exit(f"\n{fails} vektor eşleşmedi")
-    print(f"\n{len(manifest)} vektorun tamamı Python modem.py ile bit-birebir çözüldü")
+        sys.exit(f"\n{fails} vectors did not match")
+    print(f"\n all {len(manifest)} vectors decoded bit-for-bit with the Python modem.py")
 
 
 if __name__ == "__main__":

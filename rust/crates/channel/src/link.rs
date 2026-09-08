@@ -1,16 +1,17 @@
-//! `Link` — bir istasyonun kanala bağlantısı, **okuyucu ve yazıcı yarımları
-//! ayrı**. `client.py` modeli: tek bir `receive_loop` okur, `send_frame`
-//! (bir `tx_lock` ardında) yazar — bu ayrım o modele birebir oturur.
+//! `Link` — a station's connection to the channel, with the **reader and
+//! writer halves kept separate**. The `client.py` model: a single
+//! `receive_loop` reads, `send_frame` (behind a `tx_lock`) writes — this split
+//! maps onto that model exactly.
 //!
-//! İki gerçekleştirme:
-//!   - [`InProcConnector`]: aynı süreç içindeki [`ChannelCore`]'a doğrudan
-//!     bağlanır (GUI'deki tüm istasyonlar).
+//! Two implementations:
+//!   - [`InProcConnector`]: connects directly to an in-process [`ChannelCore`]
+//!     (every station in the GUI).
 //!   - [`TcpConnector`]: `channel_server.py` / `atchat-channeld` ile
-//!     tel-uyumlu satır-JSON (Python interop, dağıtık kurulum).
+//!     line-JSON wire-compatible (Python interop, a distributed setup).
 
-// `LinkTx`/`LinkRx` metotları bilerek `-> impl Future + Send + '_`: `Station`
-// bu future'ları başka görevlerde kullanacağından generic `Send` sınırı şart.
-// `async fn` sözdizimi bu sınırı ifade edemez.
+// The `LinkTx`/`LinkRx` methods deliberately return `-> impl Future + Send + '_`:
+// `Station` uses these futures on other tasks, so a generic `Send` bound is
+// required, and `async fn` syntax cannot express it.
 #![allow(clippy::manual_async_fn)]
 
 use std::future::Future;
@@ -48,19 +49,19 @@ pub fn b64_to_samples(b64: &str) -> anyhow::Result<Vec<i16>> {
 // Trait'ler
 // ------------------------------------------------------------------ //
 
-/// İstemci -> sunucu yönü (`send_json`).
+/// The client -> server direction (`send_json`).
 pub trait LinkTx: Send + 'static {
     fn send(&mut self, msg: ClientMsg) -> impl Future<Output = anyhow::Result<()>> + Send + '_;
-    /// Bağlantıyı kapat (istasyonun `/drop`'u). InProc'ta kanal kaydını siler.
+    /// Close the connection (the station's `/drop`). On InProc it removes the channel registration.
     fn close(&mut self) {}
 }
 
-/// Sunucu -> istemci yönü (`read_json`). `None` -> bağlantı koptu.
+/// The server -> client direction (`read_json`). `None` -> the connection dropped.
 pub trait LinkRx: Send + 'static {
     fn recv(&mut self) -> impl Future<Output = Option<ServerMsg>> + Send + '_;
 }
 
-/// Yeni bir (tx, rx) çifti üretebilen bağlantı fabrikası — `/reconnect` için.
+/// A connection factory that can produce a new (tx, rx) pair — for `/reconnect`.
 pub trait Connector: Send + Sync + 'static {
     type Tx: LinkTx;
     type Rx: LinkRx;
@@ -84,7 +85,7 @@ impl LinkTx for InProcTx {
     fn send(&mut self, msg: ClientMsg) -> impl Future<Output = anyhow::Result<()>> + Send + '_ {
         async move {
             match msg {
-                ClientMsg::Hello { .. } => {} // connect() sırasında yapıldı
+                ClientMsg::Hello { .. } => {} // done during connect()
                 ClientMsg::TransmitAudio { audio_b64 } => {
                     let samples = b64_to_samples(&audio_b64)?;
                     self.core.transmit(self.id, samples);
@@ -105,7 +106,7 @@ impl LinkRx for InProcRx {
     }
 }
 
-/// Aynı süreçteki [`ChannelCore`]'a bağlanır.
+/// Connects to an in-process [`ChannelCore`].
 pub struct InProcConnector {
     pub core: Arc<ChannelCore>,
     pub callsign: String,
@@ -168,7 +169,7 @@ impl LinkRx for TcpRx {
                         if let Ok(m) = serde_json::from_value::<ServerMsg>(v) {
                             return Some(m);
                         }
-                        // Bilinmeyen sunucu mesajı -> yok say, okumaya devam.
+                        // Unknown server message -> ignore it, keep reading.
                     }
                     _ => return None,
                 }
@@ -177,7 +178,7 @@ impl LinkRx for TcpRx {
     }
 }
 
-/// `atchat-channeld` / `channel_server.py`'ye TCP ile bağlanır.
+/// Connects to `atchat-channeld` / `channel_server.py` over TCP.
 pub struct TcpConnector {
     pub addr: String,
     pub callsign: String,
@@ -191,7 +192,7 @@ impl TcpConnector {
         }
     }
 
-    /// Tek seferlik bağlantı (fabrikaya ihtiyaç duymayan testler için).
+    /// A one-shot connection (for tests that do not need a factory).
     pub async fn connect_once(addr: &str, callsign: &str) -> anyhow::Result<(TcpTx, TcpRx)> {
         let c = TcpConnector::new(addr, callsign);
         c.connect().await

@@ -1,4 +1,4 @@
-//! In-process kanal: yarı çift yönlü erişim, gecikmeli teslim, monitör tap.
+//! The in-process channel: half-duplex access, delayed delivery, the monitor tap.
 
 use std::time::Duration;
 
@@ -15,7 +15,7 @@ async fn wait_rx_audio(rx: &mut Receiver<ServerMsg>) -> Vec<i16> {
                 return channel::b64_to_samples(&audio_b64).unwrap()
             }
             Ok(Some(_)) => continue,
-            other => panic!("RX_AUDIO beklenirken: {other:?}"),
+            other => panic!("while waiting for RX_AUDIO: {other:?}"),
         }
     }
 }
@@ -27,12 +27,12 @@ async fn half_duplex_grant_deny_and_delivery() {
     let (id_b, mut rx_b) = core.register("TA2DEF");
 
     let modem = Modem::new();
-    let payload = br#"{"type":"CHAT","src":"TA1ABC","dst":"ALL","text":"selam"}"#;
+    let payload = br#"{"type":"CHAT","src":"TA1ABC","dst":"ALL","text":"hi"}"#;
     let wave = modem.modulate(payload, Mode::Qpsk);
 
     core.transmit(id_a, wave.clone());
 
-    // Gönderen hemen TX_GRANTED alır.
+    // The sender gets TX_GRANTED right away.
     let g = timeout(Duration::from_secs(1), rx_a.recv())
         .await
         .unwrap()
@@ -42,7 +42,7 @@ async fn half_duplex_grant_deny_and_delivery() {
         "beklenen TX_GRANTED, gelen {g:?}"
     );
 
-    // Kanal meşgulken ikinci istasyon reddedilir.
+    // While the channel is busy the second station is refused.
     core.transmit(id_b, wave.clone());
     let d = timeout(Duration::from_secs(1), rx_b.recv())
         .await
@@ -50,7 +50,7 @@ async fn half_duplex_grant_deny_and_delivery() {
         .unwrap();
     assert!(matches!(d, ServerMsg::ChannelBusy { retry_after } if retry_after > 0.0));
 
-    // Airtime sonunda her iki istasyon da (gönderen dahil) sesi alır ve çözer.
+    // At the end of the airtime both stations (the sender included) receive and decode the audio.
     let a_audio = wait_rx_audio(&mut rx_a).await;
     let b_audio = wait_rx_audio(&mut rx_b).await;
     assert_eq!(modem.demodulate(&a_audio).as_deref(), Some(&payload[..]));
@@ -64,7 +64,7 @@ async fn monitor_tap_streams_burst_then_silence() {
     let (id_a, mut rx_a) = core.register("TA1ABC");
 
     let modem = Modem::new();
-    let wave = modem.modulate(b"monitor tap testi", Mode::Bpsk);
+    let wave = modem.modulate(b"monitor tap test", Mode::Bpsk);
     core.transmit(id_a, wave);
     let _ = timeout(Duration::from_secs(1), rx_a.recv()).await;
 
@@ -73,13 +73,13 @@ async fn monitor_tap_streams_burst_then_silence() {
     let deadline = tokio::time::Instant::now() + Duration::from_millis(900);
     while tokio::time::Instant::now() < deadline {
         if let Ok(Ok(chunk)) = timeout(Duration::from_millis(120), mon.recv()).await {
-            assert_eq!(chunk.len(), 160, "hop 20 ms = 160 örnek olmalı");
+            assert_eq!(chunk.len(), 160, "a 20 ms hop should be 160 samples");
             peak = peak.max(chunk.iter().map(|s| (*s as i32).abs()).max().unwrap_or(0));
             chunks += 1;
         }
     }
-    assert!(chunks >= 10, "monitör pacer akmıyor ({chunks} parça)");
-    assert!(peak > 500, "monitör tap sessiz kaldı (peak={peak})");
+    assert!(chunks >= 10, "the monitor pacer is not flowing ({chunks} chunks)");
+    assert!(peak > 500, "the monitor tap stayed silent (peak={peak})");
 }
 
 #[tokio::test]
@@ -92,10 +92,10 @@ async fn awgn_config_still_delivers_and_decodes() {
     let (_id_b, mut rx_b) = core.register("TA2DEF");
 
     let modem = Modem::new();
-    let payload = b"gurultulu ama cozulur";
+    let payload = b"noisy but decodable";
     core.transmit(id_a, modem.modulate(payload, Mode::Bpsk));
 
-    let _ = wait_rx_audio(&mut rx_a).await; // gönderenin kendi ekosu
+    let _ = wait_rx_audio(&mut rx_a).await; // the sender's own echo
     let b_audio = wait_rx_audio(&mut rx_b).await;
     assert_eq!(modem.demodulate(&b_audio).as_deref(), Some(&payload[..]));
 }

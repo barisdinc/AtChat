@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "AtCHAT egui arayüzleri: hepsi-bir-arada, kanal, client, monitör"
+description = "AtCHAT egui interfaces: all-in-one, channel, client, monitor"
 
 [package.metadata.wix]
 upgrade-guid = "CFD26B3D-F1A8-47C7-AA6C-519734C08093"
@@ -20,7 +20,7 @@ maintainer = "barisdinc <barisdinc@gmail.com>"
 section = "hamradio"
 priority = "optional"
 depends = "$auto"
-extended-description = "OFDM tabanlı amatör telsiz NET modu egui arayüzleri: kanal, client (çoklu), monitör ve hepsi-bir-arada."
+extended-description = "egui interfaces for an OFDM-based amateur-radio NET mode: channel, client (multi), monitor and all-in-one."
 assets = [
     ["target/release/atchat-gui", "usr/bin/", "755"],
     ["target/release/atchat-channel", "usr/bin/", "755"],

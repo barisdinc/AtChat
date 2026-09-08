@@ -1,8 +1,9 @@
-//! Kanal fiziği (`channel_server.py` portu) + istasyon bağlantı soyutlaması.
+//! The channel physics (a port of `channel_server.py`) + the station-link
+//! abstraction.
 //!
-//! Kasıtlı katman ayrımı: burada kanalın FİZİĞİ var (yarı çift yönlü erişim,
-//! AWGN, multipath); protokol MANTIĞI (master seçimi, ARQ, sohbet) `protocol`
-//! crate'inde. Gerçek SDR'a geçerken büyük ihtimalle yalnız bu crate değişir.
+//! Deliberate layering: the channel PHYSICS lives here (half-duplex access,
+//! AWGN, multipath); the protocol LOGIC (master election, ARQ, chat) lives in
+//! the `protocol` crate. Moving to a real SDR most likely changes only this crate.
 
 pub mod config;
 pub mod core;

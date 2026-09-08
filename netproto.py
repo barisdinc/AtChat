@@ -1,36 +1,36 @@
 """
-protocol.py - Ortak protokol sabitleri ve yardımcı fonksiyonlar.
+protocol.py - Shared protocol constants and helper functions.
 
-channel_server.py (kanal fiziği) ve client.py (istasyon) tarafından ortak
-kullanılır. Buradaki sayılar, tasarım sohbetimizdeki PHY/süper-çerçeve
-tablolarıyla birebir eşleşiyor.
+Shared by channel_server.py (the channel physics) and client.py (the station).
+The numbers here match the PHY/super-frame tables from our design discussion
+exactly.
 """
 import json
 import zlib
 import base64
 
-# --- PHY katmanı parametreleri -------------------------------------------
-# Efektif bayt/sn (FEC sonrası, tasarım tablosundaki sayılar)
+# --- PHY-layer parameters ---------------------------------------------
+# Effective bytes/sec (post-FEC, the numbers from the design table)
 RATE_TABLE = {
     "BPSK": 125,
     "QPSK": 250,
     "16QAM": 500,
 }
-PREAMBLE_OVERHEAD = 0.3  # sn - her aktarımın sabit senkron+header maliyeti
+PREAMBLE_OVERHEAD = 0.3  # s - the fixed sync+header cost of every transmission
 
 
 def airtime(size_bytes: int, mode: str) -> float:
-    """Bir çerçevenin 'havada kalma süresi' (saniye)."""
+    """A frame's 'time on air' (seconds)."""
     rate = RATE_TABLE.get(mode, RATE_TABLE["QPSK"])
     return PREAMBLE_OVERHEAD + size_bytes / rate
 
 
-# --- Süper-çerçeve / NET zamanlama parametreleri --------------------------
-BEACON_INTERVAL = 8.0                      # sn
-BEACON_TIMEOUT = BEACON_INTERVAL * 3       # master sessiz kalırsa yedek devralır
-LOST_TIMEOUT = 30.0                        # roster: "kayıp" işaretleme eşiği
-REMOVE_TIMEOUT = 120.0                     # roster: tamamen silme eşiği
-BLOCK_SIZE = 220                           # bayt (base64/JSON payı için küçültülmüş)
+# --- Super-frame / NET timing parameters -----------------------------
+BEACON_INTERVAL = 8.0                      # s
+BEACON_TIMEOUT = BEACON_INTERVAL * 3       # the backup takes over if the master goes quiet
+LOST_TIMEOUT = 30.0                        # roster: the "lost" marking threshold
+REMOVE_TIMEOUT = 120.0                     # roster: the full-removal threshold
+BLOCK_SIZE = 220                           # bytes (shrunk to leave room for base64/JSON)
 
 
 # --- CRC --------------------------------------------------------------
@@ -38,7 +38,7 @@ def crc32(data: bytes) -> int:
     return zlib.crc32(data) & 0xFFFFFFFF
 
 
-# --- Satır bazlı JSON çerçeveleme (TCP üzerinden) --------------------------
+# --- Line-based JSON framing (over TCP) -------------------------------
 async def send_json(writer, obj: dict):
     line = json.dumps(obj, ensure_ascii=False).encode("utf-8") + b"\n"
     writer.write(line)

@@ -1,15 +1,15 @@
 """
-client.py - NET istasyonu (protokol istemcisi).
+client.py - A NET station (the protocol client).
 
-channel_server.py'ye bağlanır ve tasarladığımız NET protokolünü uygular:
-  - LBT + backoff ile kanal erişimi ("PTT")
-  - Dinamik master seçimi / yedek master / failover
-  - Roster (kim aktif, kim kayıp)
-  - Ortak (broadcast) ve özel (unicast) sohbet
-  - Blok + CRC + ARQ ile görüntü/dosya transferi
-  - Ani kopma (/drop) ve yeniden bağlanma (/reconnect) ile devam edebilme
+Connects to channel_server.py and implements the NET protocol we designed:
+  - Channel access via LBT + backoff ("PTT")
+  - Dynamic master election / backup master / failover
+  - Roster (who is active, who is lost)
+  - Common (broadcast) and directed (unicast) chat
+  - Image/file transfer via block + CRC + ARQ
+  - The ability to resume after a sudden drop (/drop) and reconnect (/reconnect)
 
-Kullanım:
+Usage:
     python client.py TA1ABC
     python client.py TA2DEF --port 6000 --mode QPSK
 """
@@ -38,7 +38,7 @@ def jitter():
 
 
 class TransferOut:
-    """Bu istasyonun gönderdiği bir bulk transfer (görüntü/dosya)."""
+    """A bulk transfer this station is sending (image/file)."""
     def __init__(self, transfer_id, filename, dst, blocks, mode):
         self.transfer_id = transfer_id
         self.filename = filename
@@ -48,7 +48,7 @@ class TransferOut:
 
 
 class TransferIn:
-    """Bu istasyonun aldığı bir bulk transfer."""
+    """A bulk transfer this station is receiving."""
     def __init__(self, transfer_id, filename, total_blocks, src, dst):
         self.transfer_id = transfer_id
         self.filename = filename
@@ -78,66 +78,66 @@ class Client:
 
         self.transfers_out = {}       # transfer_id -> TransferOut
         self.transfers_in = {}        # transfer_id -> TransferIn
-        self.status_waiters = {}      # transfer_id -> asyncio.Future (aktif ARQ döngüsü)
+        self.status_waiters = {}      # transfer_id -> asyncio.Future (an active ARQ loop)
 
-        self.tx_lock = asyncio.Lock()  # bu istasyonun "PTT"si: aynı anda tek çerçeve
-        self.tx_reply_waiter = None    # TRANSMIT yanıtını (TX_GRANTED/CHANNEL_BUSY) taşır
-        self.modem = Modem()           # gerçek OFDM modülatör/demodülatör
+        self.tx_lock = asyncio.Lock()  # this station's "PTT": one frame at a time
+        self.tx_reply_waiter = None    # carries the TRANSMIT reply (TX_GRANTED/CHANNEL_BUSY)
+        self.modem = Modem()           # the real OFDM modulator/demodulator
         self.stdin_q = queue.Queue()
 
         os.makedirs("received", exist_ok=True)
 
     # ------------------------------------------------------------------ #
-    # Bağlantı yönetimi
+    # Connection management
     # ------------------------------------------------------------------ #
     async def connect(self):
         self.reader, self.writer = await asyncio.open_connection(self.host, self.port)
         await send_json(self.writer, {"cmd": "HELLO", "callsign": self.callsign})
         self.connected = True
-        self.last_beacon_time = time.time()  # zaman aşımı sayacı burada başlar
-        self.log(f"kanala bağlanıldı ({self.host}:{self.port})")
+        self.last_beacon_time = time.time()  # the timeout counter starts here
+        self.log(f"connected to the channel ({self.host}:{self.port})")
 
     async def drop(self):
-        """Ani kopmayı simüle et: TCP bağlantısı kapanır, süreç/durum canlı kalır."""
+        """Simulate a sudden drop: the TCP connection closes, the process/state stays alive."""
         self.connected = False
         try:
             self.writer.close()
         except Exception:
             pass
-        self.log("!! bağlantı koptu (simüle edildi) - durum korunuyor, /reconnect ile dönebilirsiniz")
+        self.log("!! link dropped (simulated) - state is preserved, you can come back with /reconnect")
 
     async def reconnect(self):
         if self.connected:
-            self.log("zaten bağlı")
+            self.log("already connected")
             return
         await self.connect()
-        # Rejoin kuralı: aktif bir master beacon'ı duyulursa asla kendini master ilan etme.
+        # Rejoin rule: never declare yourself master if an active master beacon is heard.
         self.role = "LISTENER"
         await self.send_frame({"type": "JOIN_REQUEST", "src": self.callsign, "dst": "ALL"})
         self._resume_pending_receives()
 
     def _resume_pending_receives(self):
-        """Alıcı tarafı: yarım kalan transferler için eksik blokları tekrar iste."""
+        """Receiver side: re-request the missing blocks for half-finished transfers."""
         for t in self.transfers_in.values():
             if not t.complete:
                 missing = self._missing_blocks(t)
                 if missing:
-                    self.log(f"[{t.transfer_id}] geri döndük, {t.src}'den "
-                             f"{len(missing)} eksik blok isteniyor")
+                    self.log(f"[{t.transfer_id}] we are back, requesting "
+                             f"{len(missing)} missing blocks from {t.src}")
                     asyncio.create_task(self.send_frame({
                         "type": "BULK_STATUS", "src": self.callsign, "dst": t.src,
                         "transfer_id": t.transfer_id, "missing": missing,
                     }))
 
     # ------------------------------------------------------------------ #
-    # Düşük seviye gönderim (LBT + backoff = kanal erişim mantığı)
+    # Low-level send (LBT + backoff = the channel-access logic)
     # ------------------------------------------------------------------ #
     async def send_frame(self, frame: dict, mode=None):
         if not self.connected:
             return False
         mode = mode or self.mode
 
-        # ---- GERÇEK MODÜLASYON: JSON çerçeve -> ses örnekleri ----
+        # ---- REAL MODULATION: JSON frame -> audio samples ----
         payload_bytes = json.dumps(frame, ensure_ascii=False).encode("utf-8")
         samples = self.modem.modulate(payload_bytes, mode)
         audio_b64 = base64.b64encode(samples.tobytes()).decode("ascii")
@@ -155,22 +155,22 @@ class Client:
                     reply = await asyncio.wait_for(self.tx_reply_waiter, timeout=8.0)
                 except Exception as e:
                     self.connected = False
-                    self.log(f"!! gönderim başarısız, bağlantı kopmuş sayılıyor ({e})")
+                    self.log(f"!! send failed, the link is treated as down ({e})")
                     return False
 
             if reply.get("type") == "TX_GRANTED":
-                await asyncio.sleep(reply["duration"])  # gerçek "havada kalma" süresi
+                await asyncio.sleep(reply["duration"])  # the real "time on air"
                 return True
             elif reply.get("type") == "CHANNEL_BUSY":
                 wait = reply.get("retry_after", backoff)
                 await asyncio.sleep(wait + jitter())
                 backoff = min(backoff * 1.7, 3.0)
                 continue
-        self.log("!! kanal sürekli meşgul, gönderim vazgeçildi")
+        self.log("!! the channel stayed busy, the send was given up")
         return False
 
     # ------------------------------------------------------------------ #
-    # Alım döngüsü (TEK okuyucu - hem TRANSMIT yanıtlarını hem RX_AUDIO'yu dağıtır)
+    # Receive loop (the SINGLE reader - dispatches both TRANSMIT replies and RX_AUDIO)
     # ------------------------------------------------------------------ #
     async def receive_loop(self):
         while True:
@@ -190,12 +190,12 @@ class Client:
                 if self.tx_reply_waiter and not self.tx_reply_waiter.done():
                     self.tx_reply_waiter.set_result(msg)
             elif mtype == "RX_AUDIO":
-                # ---- GERÇEK DEMODÜLASYON: ses örnekleri -> JSON çerçeve ----
+                # ---- REAL DEMODULATION: audio samples -> JSON frame ----
                 raw = base64.b64decode(msg["audio_b64"])
                 samples = np.frombuffer(raw, dtype=np.int16)
                 payload_bytes = self.modem.demodulate(samples)
                 if payload_bytes is None:
-                    continue  # çözülemedi - gerçek radyoda da "duyulmamış" sayılır
+                    continue  # could not decode - on a real radio this is "not heard" too
                 try:
                     frame = json.loads(payload_bytes.decode("utf-8"))
                 except Exception:
@@ -215,22 +215,22 @@ class Client:
             await self.on_beacon(frame)
         elif ftype == "JOIN_REQUEST" and not is_self:
             if self.role == "MASTER":
-                self.log(f"{src} net'e katıldı")
-            # Bu istasyon daha önce bize bir şey gönderiyorken kaybolduysa,
-            # rejoin anında yarım kalan transferler için eksik blokları iste.
+                self.log(f"{src} joined the net")
+            # If this station disappeared while sending us something, request the
+            # missing blocks for the half-finished transfers the moment it rejoins.
             for t in self.transfers_in.values():
                 if t.src == src and not t.complete:
                     missing = self._missing_blocks(t)
                     if missing:
-                        self.log(f"[{t.transfer_id}] {src} geri döndü, "
-                                 f"{len(missing)} eksik blok isteniyor")
+                        self.log(f"[{t.transfer_id}] {src} came back, requesting "
+                                 f"{len(missing)} missing blocks")
                         asyncio.create_task(self.send_frame({
                             "type": "BULK_STATUS", "src": self.callsign, "dst": src,
                             "transfer_id": t.transfer_id, "missing": missing,
                         }))
         elif ftype == "CHAT" and not is_self and dst in ("ALL", self.callsign):
-            tag = "herkese" if dst == "ALL" else "özel"
-            print(f"\n[SOHBET/{tag}] {src}: {frame['text']}")
+            tag = "all" if dst == "ALL" else "private"
+            print(f"\n[CHAT/{tag}] {src}: {frame['text']}")
         elif ftype == "BULK_META" and not is_self and dst in ("ALL", self.callsign):
             self.on_bulk_meta(frame)
         elif ftype == "BULK_BLOCK" and dst in ("ALL", self.callsign):
@@ -247,7 +247,7 @@ class Client:
         was_lost = self.roster.get(callsign, {}).get("status") == "lost"
         self.roster[callsign] = {"last_seen": time.time(), "status": "active"}
         if was_lost:
-            self.log(f"{callsign} yeniden görünür oldu")
+            self.log(f"{callsign} became visible again")
             for t in self.transfers_in.values():
                 if t.src == callsign and not t.complete:
                     missing = self._missing_blocks(t)
@@ -264,20 +264,20 @@ class Client:
                 del self.roster[c]
             elif now - info["last_seen"] > LOST_TIMEOUT and info["status"] != "lost":
                 info["status"] = "lost"
-                self.log(f"{c} kayıp olarak işaretlendi")
+                self.log(f"{c} marked as lost")
 
     # ------------------------------------------------------------------ #
-    # Master seçimi / beacon / failover
+    # Master election / beacon / failover
     # ------------------------------------------------------------------ #
     async def on_beacon(self, frame):
         src = frame["src"]
         now = time.time()
 
         if self.role == "MASTER" and src != self.callsign:
-            # Nadir durum: iki istasyon aynı anda master oldu. Basit tie-break:
-            # alfabetik olarak küçük çağrı işareti kazanır, diğeri geri çekilir.
+            # A rare case: two stations became master at the same time. A simple
+            # tie-break: the alphabetically smaller callsign wins, the other backs off.
             if src < self.callsign:
-                self.log(f"master çakışması: {src} devam ediyor, geri çekiliyorum")
+                self.log(f"master conflict: {src} continues, I am backing off")
                 self.role = "LISTENER"
             else:
                 return
@@ -303,9 +303,9 @@ class Client:
             now = time.time()
 
             if self.role != "MASTER" and (now - self.last_beacon_time) > BEACON_TIMEOUT:
-                # Sadece "ilk gelen" (master hiç görülmedi) ya da atanmış yedek devralır.
+                # Only the "first to arrive" (no master ever seen) or the assigned backup takes over.
                 if self.role == "BACKUP" or self.master is None:
-                    self.log("beacon zaman aşımına uğradı -> master rolü alınıyor")
+                    self.log("beacon timed out -> taking the master role")
                     self.role = "MASTER"
                     self.last_beacon_time = now
                     await self.send_beacon()
@@ -337,11 +337,11 @@ class Client:
                                       mode="BPSK")
 
     # ------------------------------------------------------------------ #
-    # Bulk transfer - gönderim
+    # Bulk transfer - send
     # ------------------------------------------------------------------ #
     async def send_bulk(self, path, dst="ALL"):
         if not os.path.exists(path):
-            self.log(f"dosya bulunamadı: {path}")
+            self.log(f"file not found: {path}")
             return
         data = open(path, "rb").read()
         n_blocks = max(1, (len(data) + BLOCK_SIZE - 1) // BLOCK_SIZE)
@@ -350,19 +350,19 @@ class Client:
         t = TransferOut(transfer_id, os.path.basename(path), dst, blocks, self.mode)
         self.transfers_out[transfer_id] = t
 
-        self.log(f"[{transfer_id}] {t.filename} -> {dst} başlıyor "
-                 f"({len(data)} B, {n_blocks} blok, {self.mode})")
+        self.log(f"[{transfer_id}] {t.filename} -> {dst} starting "
+                 f"({len(data)} B, {n_blocks} blocks, {self.mode})")
 
         if not await self.send_frame({
             "type": "BULK_META", "src": self.callsign, "dst": dst,
             "transfer_id": transfer_id, "filename": t.filename,
             "total_blocks": n_blocks, "total_size": len(data),
         }):
-            self.log(f"[{transfer_id}] başlatılamadı (bağlantı yok)")
+            self.log(f"[{transfer_id}] could not start (no link)")
             return
 
         if not await self._send_blocks(t, list(blocks.keys())):
-            self.log(f"[{transfer_id}] bağlantı koptu, transfer askıda kaldı")
+            self.log(f"[{transfer_id}] the link dropped, the transfer is suspended")
             return
         if not await self.send_frame({"type": "BULK_END", "src": self.callsign, "dst": dst,
                                        "transfer_id": transfer_id}):
@@ -371,39 +371,38 @@ class Client:
         for round_no in range(6):
             missing = await self._wait_for_status(transfer_id, timeout=6.0)
             if not self.connected:
-                self.log(f"[{transfer_id}] bağlantı koptu, transfer askıda kaldı")
+                self.log(f"[{transfer_id}] the link dropped, the transfer is suspended")
                 return
             if missing is None:
-                self.log(f"[{transfer_id}] durum yanıtı gelmedi (tur {round_no + 1})")
+                self.log(f"[{transfer_id}] no status reply (round {round_no + 1})")
                 continue
             if not missing:
-                self.log(f"[{transfer_id}] tamamlandı (tur {round_no + 1})")
+                self.log(f"[{transfer_id}] complete (round {round_no + 1})")
                 return
-            self.log(f"[{transfer_id}] {len(missing)} blok yeniden gönderiliyor (tur {round_no + 1})")
+            self.log(f"[{transfer_id}] resending {len(missing)} blocks (round {round_no + 1})")
             if not await self._send_blocks(t, missing):
                 return
             await self.send_frame({"type": "BULK_END", "src": self.callsign, "dst": dst,
                                     "transfer_id": transfer_id})
-        self.log(f"[{transfer_id}] azami tur sayısına ulaşıldı, alıcı geri dönerse otomatik devam edecek")
+        self.log(f"[{transfer_id}] reached the round limit; it will resume automatically if the receiver comes back")
 
-    # Her kaç blokta bir kanalı bilinçli olarak boşaltacağız (sohbet/kontrol
-    # mesajlarının VE BEACON'LARIN araya girebilmesi için) - tasarım
-    # sohbetimizdeki "kontrol penceresi" fikrinin gerçek karşılığı.
+    # Every N blocks we deliberately clear the channel (so chat/control
+    # messages AND BEACONS can get through) - the real counterpart of the
+    # "control window" idea from our design discussion.
     #
-    # Neden bu kadar sık ve bu kadar uzun: rakip bir istasyonun yeniden
-    # deneme zamanlaması sunucudan gelen retry_after değerine göre "mevcut
-    # bloğun bitişine" senkronize olur, pencerenin TAM olarak ne zaman
-    # açılacağını BİLEMEZ. Pencere kısa/seyrekse (önceki sürüm: her 6
-    # blokta 0.5sn), bir deneme penceреyi büyük ihtimalle KAÇIRIR - hatta
-    # beacon'lar bile kaçırabilir (gördüğümüz gerçek sorun tam buydu: iki
-    # istasyon da birbirinin beacon'ını 45 bloklu bir transfer boyunca
-    # yeterince sık duyamayıp ikisi de kendini master ilan etti). Pencereyi
-    # sıklaştırıp genişleterek yakalama olasılığını pratikte neredeyse
-    # kesinleştiriyoruz - bunun bedeli toplam verimde ~%25-30'luk bir düşüş,
-    # ama bu tam olarak orijinal tasarım hedefimizdi: ham hız değil,
-    # "arada mesaj alıp verebilme" garantisi.
+    # Why this frequent and this long: a competing station's retry timing
+    # syncs to "the end of the current block" from the server's retry_after
+    # value, but it does NOT KNOW exactly when the window opens. If the window
+    # is short/sparse (the previous version: 0.5 s every 6 blocks) a retry
+    # will most likely MISS it - it can even miss beacons (this was exactly
+    # the real problem we saw: neither station heard the other's beacon often
+    # enough during a 45-block transfer, and both declared themselves master).
+    # By making the window more frequent and wider we make catching it almost
+    # certain in practice - the cost is a ~25-30% drop in overall throughput,
+    # but that was exactly our original design goal: not raw speed, but the
+    # guarantee of "being able to pass a message in between".
     CONTROL_WINDOW_EVERY = 3
-    CONTROL_WINDOW_PAUSE = 1.2  # sn
+    CONTROL_WINDOW_PAUSE = 1.2  # s
 
     async def _send_blocks(self, t: TransferOut, seqs):
         for i, seq in enumerate(seqs):
@@ -440,12 +439,12 @@ class Client:
             fut.set_result(missing)
             return
 
-        # Aktif bir ARQ döngüsü yok (ör. daha önce bağlantı koparak çıkılmıştı)
-        # ama elimizde hâlâ bloklar var -> gecikmeli "devam et" isteğini karşıla.
-        # Burada da aynı sebeple (receive_loop içindeyiz) arka plan görevi kullanıyoruz.
+        # No active ARQ loop (e.g. we left earlier because the link dropped)
+        # but we still hold the blocks -> service the delayed "carry on" request.
+        # Here too, for the same reason (we are inside receive_loop), we use a background task.
         t = self.transfers_out.get(tid)
         if t and missing:
-            self.log(f"[{tid}] gecikmeli devam isteği: {len(missing)} blok yeniden gönderiliyor")
+            self.log(f"[{tid}] delayed resume request: resending {len(missing)} blocks")
             asyncio.create_task(self._resend_missing(t, missing))
 
     async def _resend_missing(self, t: TransferOut, missing):
@@ -454,14 +453,14 @@ class Client:
                                     "transfer_id": t.transfer_id})
 
     # ------------------------------------------------------------------ #
-    # Bulk transfer - alım
+    # Bulk transfer - receive
     # ------------------------------------------------------------------ #
     def on_bulk_meta(self, frame):
         tid = frame["transfer_id"]
         t = TransferIn(tid, frame["filename"], frame["total_blocks"], frame["src"], frame["dst"])
         self.transfers_in[tid] = t
-        self.log(f"[{tid}] {frame['src']} bir transfer başlattı: {t.filename} "
-                 f"({t.total_blocks} blok)")
+        self.log(f"[{tid}] {frame['src']} started a transfer: {t.filename} "
+                 f"({t.total_blocks} blocks)")
 
     def on_bulk_block(self, frame):
         t = self.transfers_in.get(frame["transfer_id"])
@@ -469,7 +468,7 @@ class Client:
             return
         data = b64d(frame["data"])
         if crc32(data) != frame["crc"]:
-            return  # CRC hatası -> yok sayılır, ARQ ile yeniden istenecek
+            return  # CRC mismatch -> ignored, ARQ will re-request it
         t.received[frame["seq"]] = data
 
     def _missing_blocks(self, t: TransferIn):
@@ -481,12 +480,12 @@ class Client:
             return
         missing = self._missing_blocks(t)
         if missing:
-            self.log(f"[{t.transfer_id}] {len(missing)}/{t.total_blocks} blok eksik, isteniyor")
+            self.log(f"[{t.transfer_id}] {len(missing)}/{t.total_blocks} blocks missing, requesting them")
         else:
             self._save_transfer(t)
-        # ÖNEMLİ: receive_loop içinden çağrıldığımız için send_frame'i burada
-        # AWAIT ETMEYİZ (kendi yanıtını yine receive_loop bekleyeceğinden
-        # kilitlenme olurdu) - arka plan görevi olarak fırlatıyoruz.
+        # IMPORTANT: because we are called from inside receive_loop we do NOT
+        # AWAIT send_frame here (its own reply would again be awaited by
+        # receive_loop, which would deadlock) - we launch it as a background task.
         asyncio.create_task(self.send_frame({
             "type": "BULK_STATUS", "src": self.callsign, "dst": frame["src"],
             "transfer_id": t.transfer_id, "missing": missing,
@@ -498,7 +497,7 @@ class Client:
         with open(out_path, "wb") as f:
             for seq in range(t.total_blocks):
                 f.write(t.received[seq])
-        self.log(f"[{t.transfer_id}] tamamlandı -> {out_path}")
+        self.log(f"[{t.transfer_id}] complete -> {out_path}")
 
     # ------------------------------------------------------------------ #
     # CLI
@@ -507,16 +506,16 @@ class Client:
         print(f"[{self.callsign} {time.strftime('%H:%M:%S')}] {msg}")
 
     def status(self):
-        print(f"--- {self.callsign} | rol={self.role} | master={self.master} | "
-              f"backup={self.backup} | bağlı={self.connected} ---")
+        print(f"--- {self.callsign} | role={self.role} | master={self.master} | "
+              f"backup={self.backup} | connected={self.connected} ---")
         for c, i in self.roster.items():
             age = time.time() - i["last_seen"]
-            print(f"  {c}: {i['status']} (son görülme {age:.0f}sn önce)")
+            print(f"  {c}: {i['status']} (last seen {age:.0f}s ago)")
         for tid, t in self.transfers_in.items():
-            state = "tamam" if t.complete else f"{len(t.received)}/{t.total_blocks}"
-            print(f"  gelen  [{tid}] {t.filename} ({state})")
+            state = "done" if t.complete else f"{len(t.received)}/{t.total_blocks}"
+            print(f"  in   [{tid}] {t.filename} ({state})")
         for tid, t in self.transfers_out.items():
-            print(f"  giden  [{tid}] {t.filename} -> {t.dst}")
+            print(f"  out  [{tid}] {t.filename} -> {t.dst}")
 
     def _stdin_reader_thread(self):
         for line in sys.stdin:
@@ -524,23 +523,23 @@ class Client:
 
     async def cli_loop(self):
         threading.Thread(target=self._stdin_reader_thread, daemon=True).start()
-        print("Komutlar:")
-        print("  /chat <mesaj>                 - herkese sohbet mesajı")
-        print("  /msg <ÇAĞRI> <mesaj>           - özel mesaj")
-        print("  /sendimage <yol> [ÇAĞRI|ALL]   - görüntü/veri gönder (varsayılan: ALL)")
-        print("  /sendfile <yol> <ÇAĞRI>        - dosya gönder (özel)")
-        print("  /status                        - rol, roster, transfer durumu")
-        print("  /drop                          - ani kopmayı simüle et")
-        print("  /reconnect                     - yeniden bağlan, kaldığı yerden devam")
-        print("  /quit                          - çık")
+        print("Commands:")
+        print("  /chat <message>               - chat message to everyone")
+        print("  /msg <CALL> <message>         - private message")
+        print("  /sendimage <path> [CALL|ALL]  - send image/data (default: ALL)")
+        print("  /sendfile <path> <CALL>       - send file (private)")
+        print("  /status                       - role, roster, transfer state")
+        print("  /drop                         - simulate a sudden drop")
+        print("  /reconnect                    - reconnect, resume where it left off")
+        print("  /quit                         - quit")
         while True:
             try:
                 line = self.stdin_q.get_nowait()
             except queue.Empty:
                 await asyncio.sleep(0.1)
                 continue
-            # Uzun süren komutları (transfer) arka planda çalıştır ki
-            # /drop gibi komutlar transfer sürerken de işlenebilsin.
+            # Run long-running commands (transfers) in the background so that
+            # commands like /drop can still be processed while a transfer runs.
             asyncio.create_task(self._handle_command(line))
 
     async def _handle_command(self, line):
@@ -567,13 +566,13 @@ class Client:
             elif cmd == "/quit":
                 os._exit(0)
             else:
-                print("bilinmeyen komut ya da eksik parametre")
+                print("unknown command or missing parameter")
         except Exception as e:
-            self.log(f"hata: {e}")
+            self.log(f"error: {e}")
 
 
 async def main():
-    ap = argparse.ArgumentParser(description="NET istasyon istemcisi")
+    ap = argparse.ArgumentParser(description="NET station client")
     ap.add_argument("callsign")
     ap.add_argument("--host", default="127.0.0.1")
     ap.add_argument("--port", type=int, default=6000)
@@ -583,18 +582,18 @@ async def main():
     client = Client(args.callsign.upper(), args.host, args.port, args.mode)
     await client.connect()
 
-    # ÖNEMLİ: arka plan görevlerini (özellikle receive_loop) JOIN_REQUEST'ten
-    # ÖNCE başlatıyoruz. send_frame, sunucudan gelecek TX_GRANTED yanıtını
-    # receive_loop'un okumasına güvenir - receive_loop henüz çalışmıyorsa
-    # ilk gönderim sessizce zaman aşımına uğrar ve istemci kendini yanlışlıkla
-    # "bağlantı yok" sanır (tüm sonraki komutlar da sessizce başarısız olur).
+    # IMPORTANT: we start the background tasks (especially receive_loop)
+    # BEFORE the JOIN_REQUEST. send_frame relies on receive_loop to read the
+    # TX_GRANTED reply from the server - if receive_loop is not running yet,
+    # the first send silently times out and the client wrongly thinks it has
+    # "no link" (every subsequent command then also fails silently).
     tasks = [
         asyncio.create_task(client.receive_loop()),
         asyncio.create_task(client.master_watchdog()),
         asyncio.create_task(client.beacon_loop()),
         asyncio.create_task(client.cli_loop()),
     ]
-    await asyncio.sleep(0.1)  # arka plan görevlerinin ilk çalışma turunu alması için
+    await asyncio.sleep(0.1)  # so the background tasks get their first run
 
     await client.send_frame({"type": "JOIN_REQUEST", "src": client.callsign, "dst": "ALL"})
 

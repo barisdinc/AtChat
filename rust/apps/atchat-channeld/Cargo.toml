@@ -20,7 +20,7 @@ maintainer = "barisdinc <barisdinc@gmail.com>"
 section = "hamradio"
 priority = "optional"
 depends = "$auto"
-extended-description = "channel_server.py ile tel-uyumlu headless TCP kanal sunucusu; Python client.py / monitor.py doğrudan bağlanabilir."
+extended-description = "A headless TCP channel server, wire-compatible with channel_server.py; the Python client.py / monitor.py can connect directly."
 
 [dependencies]
 channel.workspace = true

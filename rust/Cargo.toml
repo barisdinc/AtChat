@@ -19,8 +19,8 @@ repository = "https://github.com/barisdinc/AtChat"
 authors = ["barisdinc <barisdinc@gmail.com>"]
 
 [workspace.dependencies]
-# Ortak (crate'ler arası paylaşılan) bağımlılıklar. modem.py / client.py /
-# channel_server.py'nin birebir portu için gereken minimum küme.
+# Shared (cross-crate) dependencies. The minimum set needed for an exact port
+# of modem.py / client.py / channel_server.py.
 anyhow = "1"
 base64 = "0.22"
 crc32fast = "1.4"
