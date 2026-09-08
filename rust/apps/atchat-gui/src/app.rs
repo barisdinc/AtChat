@@ -12,15 +12,34 @@ const WF_W: usize = 480;
 const WF_H: usize = 256;
 
 #[derive(PartialEq, Eq, Clone, Copy)]
-enum Tab {
+pub enum Tab {
     Channel,
     Stations,
     Net,
     Monitor,
 }
 
+impl Tab {
+    fn label(self) -> &'static str {
+        match self {
+            Tab::Channel => "Kanal",
+            Tab::Stations => "İstasyonlar",
+            Tab::Net => "NET",
+            Tab::Monitor => "Monitör",
+        }
+    }
+}
+
+/// Hangi ikilinin hangi sekmeleri göstereceğini belirler.
+pub struct AppConfig {
+    pub title: String,
+    pub tabs: Vec<Tab>,
+}
+
 pub struct AtchatApp {
     engine: EngineHandle,
+    title: String,
+    tabs: Vec<Tab>,
     tab: Tab,
 
     // --- DSP (GUI thread) ---
@@ -65,13 +84,16 @@ pub struct AtchatApp {
 }
 
 impl AtchatApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
+    pub fn new(_cc: &eframe::CreationContext<'_>, engine: EngineHandle, cfg: AppConfig) -> Self {
         let fft_size = 1024;
         let mut spectrum = SpectrumAnalyzer::new(fft_size);
         spectrum.set_averaging(0.5);
+        let tab = cfg.tabs.first().copied().unwrap_or(Tab::Stations);
         Self {
-            engine: EngineHandle::spawn(cc.egui_ctx.clone()),
-            tab: Tab::Stations,
+            engine,
+            title: cfg.title,
+            tabs: cfg.tabs,
+            tab,
             scope: ScopeBuf::new(16_000),
             spectrum,
             waterfall: Waterfall::new(WF_W, WF_H),
@@ -155,12 +177,11 @@ impl eframe::App for AtchatApp {
 
         egui::TopBottomPanel::top("tabs").show(ctx, |ui| {
             ui.horizontal(|ui| {
-                ui.heading("AtCHAT");
+                ui.heading(&self.title);
                 ui.separator();
-                ui.selectable_value(&mut self.tab, Tab::Channel, "Kanal");
-                ui.selectable_value(&mut self.tab, Tab::Stations, "İstasyonlar");
-                ui.selectable_value(&mut self.tab, Tab::Net, "NET");
-                ui.selectable_value(&mut self.tab, Tab::Monitor, "Monitör");
+                for t in self.tabs.clone() {
+                    ui.selectable_value(&mut self.tab, t, t.label());
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if let Some(ch) = &snap.channel {
                         let (txt, col) = match &ch.current_tx {
@@ -172,6 +193,8 @@ impl eframe::App for AtchatApp {
                         };
                         ui.colored_label(col, txt);
                         ui.label(format!("{} istasyon", ch.active_clients));
+                    } else if let Some(addr) = &snap.link_addr {
+                        ui.weak(format!("↔ {addr}"));
                     }
                 });
             });
@@ -274,10 +297,14 @@ impl AtchatApp {
         }
 
         ui.add_space(4.0);
+        ui.label("Havadaki sinyal (scope):");
+        self.draw_scope(ui);
+
+        ui.add_space(4.0);
         ui.label("Olay günlüğü:");
         egui::ScrollArea::vertical()
             .stick_to_bottom(true)
-            .max_height(320.0)
+            .max_height(220.0)
             .show(ui, |ui| {
                 for line in &snap.channel_log {
                     ui.monospace(line);

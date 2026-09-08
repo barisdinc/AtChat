@@ -73,10 +73,30 @@ cargo test -p protocol -- --ignored full_size_image     # gerçek boyut (~75 sn)
 # Faz 4/5
 cargo test -p dsp-viz -p atchat-gui                     # DSP + motor↔GUI glue
 
-# GUI'yi çalıştır
-cargo run -p atchat-gui                                 # tek pencere: Kanal | İstasyonlar | Monitör
-cargo build --release                                   # tek binary (hedef platform)
+# GUI — hepsi bir arada (hızlı deneme)
+cargo run --bin atchat-gui
+
+# GUI — ayrı process'ler (birden çok client için)
+cargo run --bin atchat-channel -- --port 6000               # kanal (bir tane)
+cargo run --bin atchat-client  -- --connect 127.0.0.1:6000  # client (İSTEDİĞİN KADAR pencere)
+cargo run --bin atchat-client  -- --connect 127.0.0.1:6000
+cargo run --bin atchat-monitor -- --connect 127.0.0.1:6000  # scope/spectrum/waterfall
+
+cargo build --release                                   # tüm binary'ler (hedef platform)
 ```
+
+## Arayüzler
+
+| İkili | Ne | Sekmeler | Kaç örnek |
+|---|---|---|---|
+| `atchat-gui` | Hepsi bir arada (in-proc kanal) | Kanal · İstasyonlar · NET · Monitör | 1 |
+| `atchat-channel` | Kanal fiziği + TCP sunucu (`channel_server.py` tel-uyumlu) | Kanal | 1 |
+| `atchat-client` | TCP ile kanala bağlanan istasyon(lar) | İstasyonlar · NET | **çok** |
+| `atchat-monitor` | Kanalı pasif dinleyen görselleştirici | Monitör | çok |
+
+`atchat-channel` başka process'lerin (Python `client.py` / `monitor.py` dahil)
+bağlandığı ortak kanaldır. `atchat-client`'ı istediğiniz kadar açıp her
+birinden ayrı istasyonlar yönetebilirsiniz.
 
 ## Sürüm paketleri
 
@@ -87,6 +107,10 @@ cargo build --release                                   # tek binary (hedef plat
 |---|---|
 | `release.yml` (cargo-dist, `dist-workspace.toml`) | macOS arm64/x64 · Linux arm64/x64 · Windows x64 arşivleri (`.tar.xz` / `.zip`) + **Windows `.msi`** + sha256 + `source.tar.gz` |
 | `deb.yml` (cargo-deb) | Ubuntu/Debian **`.deb`** (x86_64); `atchat-gui` masaüstü girişiyle |
+
+`atchat-gui` arşivi/MSI/deb'i dört arayüzü de içerir (`atchat-gui`,
+`atchat-channel`, `atchat-client`, `atchat-monitor`); `atchat-channeld`
+ayrı paket.
 
 ```
 # rust/Cargo.toml'da version'ı bump et, sonra:

@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 authors.workspace = true
-description = "AtCHAT tek pencere GUI (egui/eframe): Kanal | İstasyonlar | Monitör"
+description = "AtCHAT egui arayüzleri: hepsi-bir-arada, kanal, client, monitör"
 
 [package.metadata.wix]
 upgrade-guid = "CFD26B3D-F1A8-47C7-AA6C-519734C08093"
@@ -20,11 +20,18 @@ maintainer = "barisdinc <barisdinc@gmail.com>"
 section = "hamradio"
 priority = "optional"
 depends = "$auto"
-extended-description = "OFDM tabanlı amatör telsiz NET modu için tek pencere GUI (egui): kanal fiziği, çok istasyonlu sohbet/transfer ve scope/spectrum/waterfall monitör."
+extended-description = "OFDM tabanlı amatör telsiz NET modu egui arayüzleri: kanal, client (çoklu), monitör ve hepsi-bir-arada."
 assets = [
     ["target/release/atchat-gui", "usr/bin/", "755"],
+    ["target/release/atchat-channel", "usr/bin/", "755"],
+    ["target/release/atchat-client", "usr/bin/", "755"],
+    ["target/release/atchat-monitor", "usr/bin/", "755"],
     ["assets/atchat-gui.desktop", "usr/share/applications/", "644"],
 ]
+
+[lib]
+name = "atchat_gui"
+path = "src/lib.rs"
 
 [dependencies]
 netproto.workspace = true
@@ -34,7 +41,9 @@ protocol.workspace = true
 dsp-viz.workspace = true
 anyhow.workspace = true
 rand.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync"] }
+serde_json.workspace = true
+clap = { version = "4", features = ["derive"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "sync", "net", "io-util"] }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow", "wayland", "x11"] }

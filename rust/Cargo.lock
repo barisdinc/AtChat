@@ -390,6 +390,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "channel",
+ "clap",
  "cpal",
  "dsp-viz",
  "eframe",
@@ -399,6 +400,7 @@ dependencies = [
  "protocol",
  "rand 0.8.8",
  "rfd",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
