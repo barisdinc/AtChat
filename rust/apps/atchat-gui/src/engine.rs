@@ -253,11 +253,30 @@ fn push_own_chat<C: Connector>(
     slot.station.chat_bg(text, dst);
 }
 
+/// Gelen bir sohbeti birleşik akışa ekle — aynı mesaj birden çok yerel
+/// istasyonca alınırsa (ve kendi gönderdiysem) tek satır kalsın diye
+/// son satırlara karşı tekilleştirir.
+fn push_recv_chat(net_chat: &Mutex<VecDeque<ChatLine>>, line: ChatLine) {
+    let mut nc = net_chat.lock().unwrap();
+    let dup = nc
+        .iter()
+        .rev()
+        .take(16)
+        .any(|l| l.from == line.from && l.text == line.text && l.dst == line.dst);
+    if !dup {
+        nc.push_back(line);
+        while nc.len() > 400 {
+            nc.pop_front();
+        }
+    }
+}
+
 async fn add_station<C: Connector>(
     slots: &mut BTreeMap<String, StationSlot<C>>,
     callsign: &str,
     mode: netproto::Mode,
     connector: C,
+    net_chat: &Arc<Mutex<VecDeque<ChatLine>>>,
 ) {
     let c = callsign.trim().to_uppercase();
     if c.is_empty() || slots.contains_key(&c) {
@@ -268,26 +287,27 @@ async fn add_station<C: Connector>(
             let log = Arc::new(Mutex::new(VecDeque::new()));
             let chat = Arc::new(Mutex::new(VecDeque::new()));
             let mut ev = station.subscribe();
-            let (l2, c2) = (Arc::clone(&log), Arc::clone(&chat));
+            let (l2, c2, nc2) = (Arc::clone(&log), Arc::clone(&chat), Arc::clone(net_chat));
             let drain = tokio::spawn(async move {
                 loop {
                     match ev.recv().await {
                         Ok(StationEvent::Log(s)) => push_cap(&l2, s, 300),
-                        Ok(StationEvent::Chat { from, scope, text }) => push_cap(
-                            &c2,
-                            ChatLine {
+                        Ok(StationEvent::Chat { from, scope, text }) => {
+                            let private = scope == ChatScope::Private;
+                            let line = ChatLine {
                                 from,
-                                dst: if scope == ChatScope::Private {
+                                dst: if private {
                                     "(özel)".into()
                                 } else {
                                     "ALL".into()
                                 },
                                 text,
-                                private: scope == ChatScope::Private,
+                                private,
                                 own: false,
-                            },
-                            200,
-                        ),
+                            };
+                            push_cap(&c2, line.clone(), 200);
+                            push_recv_chat(&nc2, line);
+                        }
                         Ok(_) => {}
                         Err(broadcast::error::RecvError::Lagged(_)) => {}
                         Err(_) => break,
@@ -334,7 +354,7 @@ async fn handle_station_cmd<C, F>(
     match cmd {
         EngineCmd::AddStation { callsign, mode } => {
             let conn = make_conn(&callsign);
-            add_station(slots, &callsign, mode, conn).await;
+            add_station(slots, &callsign, mode, conn, net_chat).await;
         }
         EngineCmd::RemoveStation { callsign } => {
             slots.remove(&callsign.to_uppercase());
@@ -833,6 +853,14 @@ mod tests {
                 .map(|v| v.chat.iter().any(|c| c.text == "tcp merhaba" && !c.own))
                 .unwrap_or(false)),
             "B (ayrı process benzeri) TCP kanaldan sohbeti almalıydı"
+        );
+        // NET akışında da görünmeli (kendi mesajı olmasa bile).
+        assert!(
+            wait_until(&b, 5, |s| s
+                .net_chat
+                .iter()
+                .any(|c| c.from == "TA1ABC" && c.text == "tcp merhaba" && !c.own)),
+            "uzak istasyonun mesajı B'nin NET akışında görünmeliydi"
         );
         // Kanal motoru trafiği görmüş olmalı.
         assert!(wait_until(&ch, 5, |s| !s.monitor_decodes.is_empty()
