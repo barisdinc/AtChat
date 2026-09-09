@@ -1,0 +1,318 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ATCHAT — Overview</title>
+<style>
+  :root{
+    --ink:#1f2937; --muted:#5b6b7f; --line:#94a3b8; --rule:#e2e8f0;
+    --blue:#1f6feb; --blue-t:#e8f1fd;
+    --teal:#0d9488; --teal-t:#dcf3f0;
+    --amber:#b45309; --amber-t:#fbeedd;
+    --violet:#6d28d9; --violet-t:#efe9fd;
+    --rose:#be123c; --rose-t:#fce7ec;
+    --slate-t:#f1f5f9;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{font-family:var(--sans);color:var(--ink);line-height:1.62;font-size:10.6pt;margin:0}
+  .page{max-width:820px;margin:0 auto;padding:0 24px}
+  h1{font-size:27pt;line-height:1.12;margin:0 0 4px;letter-spacing:-.015em}
+  .sub{font-size:12.5pt;color:#334155;margin:10px 0 4px;font-weight:500}
+  h2{font-size:15.5pt;margin:30px 0 8px;padding-top:8px;border-top:2px solid var(--ink);letter-spacing:-.01em;break-after:avoid}
+  h3{font-size:11.5pt;margin:18px 0 4px;break-after:avoid}
+  p{margin:8px 0}
+  ul{margin:6px 0;padding-left:20px}
+  li{margin:4px 0}
+  code{font-family:var(--mono);font-size:.85em;background:var(--slate-t);padding:1px 4px;border-radius:4px}
+  strong{font-weight:650}
+  a{color:var(--blue);text-decoration:none}
+  hr{border:none;border-top:1px solid var(--rule);margin:20px 0}
+
+  .status{background:var(--amber-t);border:1px solid #eab876;border-left:4px solid var(--amber);
+          border-radius:8px;padding:11px 15px;margin:16px 0;font-size:9.8pt;color:#7c4a12}
+  .pitch{background:var(--blue-t);border-left:4px solid var(--blue);border-radius:8px;padding:12px 16px;font-size:10.4pt;color:#1e3a5f}
+
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:9.2pt;break-inside:avoid}
+  th,td{border:1px solid var(--rule);padding:6px 9px;text-align:left;vertical-align:top}
+  th{background:var(--slate-t);font-weight:650}
+
+  .cap{display:grid;grid-template-columns:1fr 1fr;gap:10px 18px;margin:12px 0}
+  .cap h3{margin:0 0 2px;color:#0f172a}
+  .cap p{margin:0;font-size:9.5pt;color:#3f4d5f}
+  .cap > div{break-inside:avoid;padding-left:12px;border-left:3px solid var(--teal)}
+
+  figure{margin:18px 0;break-inside:avoid}
+  figure svg{width:100%;height:auto;display:block}
+  figcaption{font-size:8.5pt;color:var(--muted);margin-top:6px;text-align:center}
+  svg text{font-family:var(--mono)}
+
+  ol.walk{counter-reset:s;list-style:none;padding-left:0}
+  ol.walk li{position:relative;padding:6px 0 6px 34px;border-bottom:1px dashed var(--rule);font-size:9.7pt}
+  ol.walk li::before{counter-increment:s;content:counter(s);position:absolute;left:0;top:6px;
+      width:22px;height:22px;border-radius:50%;background:var(--violet);color:#fff;font-size:9pt;
+      display:flex;align-items:center;justify-content:center;font-weight:700}
+
+  @page{size:A4;margin:15mm 14mm}
+  @media print{
+    h2{break-before:page;border-top:none;padding-top:0}
+    h2#c1{break-before:avoid}
+    figure,table,.cap>div{break-inside:avoid}
+  }
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>ATCHAT</h1>
+<p class="sub">A robust digital mode for amateur radio — pictures, files and a multi-station text net,
+inside one 2.7&nbsp;kHz SSB channel.</p>
+
+<p><strong>ATCHAT is a digital mode for amateur radio.</strong> It aims to be as easy to run as
+SSTV, but far more robust, and to do things SSTV cannot: move <strong>images and files with error
+correction</strong>, and host a <strong>multi-station text net</strong> — all inside one ordinary
+<strong>2.7&nbsp;kHz SSB</strong> channel. It takes its cues from KG-STV, EasyPal and HSModem and
+builds them into a single coordinated on-air protocol.</p>
+
+<div class="status">
+<strong>Where it stands today.</strong> ATCHAT is a full software design with a <em>real</em>
+working modem: it genuinely turns data into audio and decodes audio back into data, with real bit
+errors under real simulated noise. The “channel” is currently a local network link that carries
+that audio between stations; it is not yet connected to a sound card or an SDR. Everything below
+is implemented and tested in software.
+</div>
+
+<h2 id="c1">The one-paragraph pitch</h2>
+<div class="pitch">
+Start the app. Your station finds the net on its own — no “who’s the server?” configuration. You
+type in a shared channel that everyone sees, or address one station privately. You drop a photo
+in; it goes out block by block with a checksum on every block, and if the far end misses a few
+blocks in a fade it asks for <strong>just those</strong> and the picture still arrives
+pixel-perfect. While that picture is transferring, <strong>the chat keeps working</strong> —
+ATCHAT deliberately leaves gaps in the file stream so messages and the net heartbeat always get
+through. If the link gets noisy, the sender <strong>automatically shifts to a slower, tougher
+modulation</strong>. If a station — even the one coordinating the net — disappears, another one
+<strong>takes over automatically</strong>, and a station that drops out mid-transfer
+<strong>resumes where it left off</strong> when it comes back.
+</div>
+
+<h2>Capabilities</h2>
+
+<div class="cap">
+  <div>
+    <h3>Multi-station net, zero configuration</h3>
+    <p>Stations discover each other automatically; the first on frequency starts coordinating.
+    A live <strong>roster</strong> shows who is active, who has gone quiet, and drops stations
+    that stay gone.</p>
+  </div>
+  <div>
+    <h3>Self-healing coordination</h3>
+    <p>One station beacons the roster. If it goes off the air the <strong>next station in
+    line</strong> takes over — and if that one is also gone, the one after it. The order is the
+    same for everyone, so it needs no negotiation, and it does <strong>not</strong> stop at a
+    single designated backup.</p>
+  </div>
+  <div>
+    <h3>Public and private messaging, together</h3>
+    <p><strong>Broadcast chat</strong> everyone sees; <strong>directed chat</strong> addressed to
+    one callsign that only that station displays. Text uses the most robust modulation, so short
+    messages punch through conditions that break a file transfer.</p>
+  </div>
+  <div>
+    <h3>Image &amp; file transfer with ARQ</h3>
+    <p>Any file is split into 220-byte blocks, each checksummed. The receiver replies with the
+    <strong>list of blocks it is still missing</strong>; the sender resends <strong>only
+    those</strong>. Delivery is <strong>bit-exact</strong>. Send to <strong>ALL</strong> or to
+    <strong>one callsign</strong>.</p>
+  </div>
+  <div>
+    <h3>Chat keeps flowing during a transfer</h3>
+    <p>ATCHAT builds in a <strong>control window</strong>: it pauses the block stream regularly so
+    chat and the heartbeat always have room. The window <strong>widens automatically</strong> when
+    it detects contention, then narrows again.</p>
+  </div>
+  <div>
+    <h3>Adaptive robustness</h3>
+    <p>Transfers start on the faster <strong>QPSK</strong>. If a recovery round shows the link is
+    losing more than ~15% of what was sent, the sender <strong>drops to BPSK</strong> — slower but
+    far more noise-tolerant — for the rest of that transfer. The receiver needs no warning.</p>
+  </div>
+  <div>
+    <h3>Survive a dropout and resume</h3>
+    <p>A station can lose its link and keep all its state. On reconnect it re-announces itself;
+    the other side <strong>re-sends the blocks it still owed</strong>. The transfer finishes the
+    <strong>missing tail only</strong> — never a restart.</p>
+  </div>
+  <div>
+    <h3>Passive monitoring</h3>
+    <p>A <strong>monitor</strong> listens without ever transmitting and without appearing in the
+    roster. It shows the live <strong>waterfall, spectrum and scope</strong> and a running decode
+    strip (“TA1ABC → ALL | CHAT | decoded”, or “undecoded”).</p>
+  </div>
+  <div>
+    <h3>Two front ends</h3>
+    <p>A <strong>cross-platform GUI</strong> (Windows / macOS / Linux) with Channel, Stations, NET
+    and Monitor tabs plus real audio output, and a <strong>command-line client</strong>
+    (<code>/chat</code>, <code>/msg</code>, <code>/sendimage</code>, <code>/sendfile</code>,
+    <code>/drop</code>, <code>/reconnect</code>).</p>
+  </div>
+</div>
+
+<figure>
+<svg viewBox="0 0 800 250" role="img" aria-label="How the pieces fit">
+  <defs>
+    <marker id="a2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#475569"/>
+    </marker>
+  </defs>
+  <!-- stations -->
+  <g font-size="9">
+    <rect x="30" y="30" width="120" height="46" rx="8" fill="var(--violet-t)" stroke="var(--violet)"/>
+    <text x="90" y="50" text-anchor="middle" font-weight="700">Station A</text>
+    <text x="90" y="64" text-anchor="middle" fill="var(--muted)">GUI or CLI</text>
+    <rect x="30" y="102" width="120" height="46" rx="8" fill="var(--violet-t)" stroke="var(--violet)"/>
+    <text x="90" y="122" text-anchor="middle" font-weight="700">Station B</text>
+    <rect x="30" y="174" width="120" height="46" rx="8" fill="var(--violet-t)" stroke="var(--violet)"/>
+    <text x="90" y="194" text-anchor="middle" font-weight="700">Station C</text>
+    <rect x="30" y="230" width="120" height="18" rx="6" fill="var(--slate-t)" stroke="var(--line)" stroke-dasharray="3 2"/>
+    <text x="90" y="243" text-anchor="middle" font-size="8" fill="var(--muted)">Monitor (listen only)</text>
+  </g>
+  <!-- each station stack -->
+  <text x="210" y="20" font-size="8.5" fill="var(--muted)">every station runs:</text>
+  <rect x="210" y="30" width="150" height="34" rx="6" fill="var(--violet-t)" stroke="var(--violet)"/>
+  <text x="285" y="45" text-anchor="middle" font-size="8.5" fill="#4c1d95">NET protocol</text>
+  <text x="285" y="57" text-anchor="middle" font-size="7.5" fill="#5b21b6">election · roster · chat · ARQ</text>
+  <rect x="210" y="70" width="150" height="26" rx="6" fill="var(--blue-t)" stroke="var(--blue)"/>
+  <text x="285" y="86" text-anchor="middle" font-size="8.5" fill="#1e40af">OFDM modem (real audio)</text>
+  <!-- channel -->
+  <rect x="440" y="70" width="200" height="120" rx="10" fill="var(--teal-t)" stroke="var(--teal)"/>
+  <text x="540" y="96" text-anchor="middle" font-size="10" font-weight="700" fill="#115e59">The channel</text>
+  <text x="540" y="116" text-anchor="middle" font-size="8" fill="#0f766e">one transmitter at a time</text>
+  <text x="540" y="130" text-anchor="middle" font-size="8" fill="#0f766e">broadcasts audio to everyone</text>
+  <text x="540" y="144" text-anchor="middle" font-size="8" fill="#0f766e">optional real AWGN + multipath</text>
+  <text x="540" y="166" text-anchor="middle" font-size="8" fill="var(--rose)">← a real SSB radio / SDR</text>
+  <text x="540" y="178" text-anchor="middle" font-size="8" fill="var(--rose)">replaces exactly this box</text>
+  <!-- arrows -->
+  <line x1="360" y1="82" x2="440" y2="110" stroke="#475569" marker-end="url(#a2)" marker-start="url(#a2)"/>
+  <line x1="150" y1="53" x2="210" y2="47" stroke="#475569" marker-end="url(#a2)"/>
+  <line x1="150" y1="125" x2="205" y2="90" stroke="#475569" marker-end="url(#a2)"/>
+  <line x1="150" y1="197" x2="205" y2="92" stroke="#475569" marker-end="url(#a2)"/>
+  <path d="M150 239 q220 20 290 -49" fill="none" stroke="var(--line)" stroke-dasharray="3 3" marker-end="url(#a2)"/>
+</svg>
+<figcaption>Every station carries all the intelligence. The channel only enforces
+“one at a time” and passes the audio on — that is the box a real radio takes over.</figcaption>
+</figure>
+
+<h2>A session, start to finish</h2>
+<ol class="walk">
+<li><strong>Three operators</strong> open ATCHAT and connect to the channel.</li>
+<li>Nobody hears a beacon, so after ~24 s the first station starts beaconing and becomes the net
+coordinator; the next station is marked as its backup. All three now share a roster.</li>
+<li><strong>TA1ABC:</strong> <code>net is open</code> → everyone sees it. <strong>TA3GHI</strong>
+replies privately to TA1ABC: <code>meet on 40 later?</code> — only TA1ABC sees that line.</li>
+<li><strong>TA1ABC sends a group photo.</strong> It streams out in blocks; every few blocks the
+channel opens briefly.</li>
+<li>Mid-transfer, <strong>TA2DEF</strong> types <code>great pic</code> — it lands in one of those
+windows. ATCHAT notices the contention and opens the windows more often for a while.</li>
+<li><strong>TA3GHI</strong> had a bad few seconds and missed blocks 12, 19, 31. After the
+sender’s “end”, TA3GHI asks for exactly those three; they come again and the photo is complete and
+pixel-identical for all three stations.</li>
+<li><strong>TA1ABC’s laptop sleeps.</strong> The beacon stops. ~24 s later <strong>TA2DEF</strong>
+(the backup) takes over coordination seamlessly.</li>
+<li><strong>TA1ABC wakes up</strong>, reconnects, re-announces. It does <strong>not</strong> try
+to grab coordination back — there is a live beacon. It rejoins as a normal station.</li>
+</ol>
+
+<h2>Performance envelope</h2>
+<p>Measured, not modelled — real modulation through real simulated impairments.</p>
+
+<figure>
+<svg viewBox="0 0 800 250" role="img" aria-label="Success vs SNR">
+  <!-- axes -->
+  <line x1="70" y1="200" x2="740" y2="200" stroke="var(--ink)"/>
+  <line x1="70" y1="30" x2="70" y2="200" stroke="var(--ink)"/>
+  <text x="405" y="232" text-anchor="middle" font-size="9" fill="var(--muted)">channel SNR (dB)  —  worse ← → better</text>
+  <text x="24" y="120" font-size="9" fill="var(--muted)" transform="rotate(-90 24 120)">frame success</text>
+  <g font-size="8" fill="var(--muted)">
+    <text x="70" y="214" text-anchor="middle">8</text>
+    <text x="180" y="214" text-anchor="middle">10</text>
+    <text x="290" y="214" text-anchor="middle">12</text>
+    <text x="400" y="214" text-anchor="middle">14</text>
+    <text x="510" y="214" text-anchor="middle">16</text>
+    <text x="620" y="214" text-anchor="middle">18</text>
+    <text x="730" y="214" text-anchor="middle">20+</text>
+    <text x="60" y="204" text-anchor="end">0%</text>
+    <text x="60" y="120" text-anchor="end">50%</text>
+    <text x="60" y="36" text-anchor="end">100%</text>
+  </g>
+  <line x1="70" y1="35" x2="740" y2="35" stroke="var(--rule)"/>
+  <line x1="70" y1="117" x2="740" y2="117" stroke="var(--rule)"/>
+  <!-- QPSK curve: cliff around 10-12 dB -->
+  <polyline points="70,198 150,196 180,190 210,150 260,70 320,40 400,36 740,36"
+            fill="none" stroke="var(--blue)" stroke-width="2.5"/>
+  <circle cx="180" cy="190" r="3" fill="var(--blue)"/>
+  <text x="255" y="120" font-size="8.5" fill="var(--blue)">QPSK (fast, default)</text>
+  <text x="212" y="140" font-size="8" fill="var(--blue)">the COFDM “cliff”</text>
+  <!-- BPSK curve: holds much lower -->
+  <polyline points="70,150 130,70 170,44 220,38 300,36 740,36"
+            fill="none" stroke="var(--teal)" stroke-width="2.5" stroke-dasharray="6 3"/>
+  <circle cx="130" cy="70" r="3" fill="var(--teal)"/>
+  <text x="150" y="92" font-size="8.5" fill="var(--teal)">BPSK (robust) — where the auto-downshift saves the transfer</text>
+  <!-- 10 dB marker -->
+  <line x1="180" y1="30" x2="180" y2="200" stroke="var(--rose)" stroke-dasharray="3 2"/>
+  <text x="180" y="26" text-anchor="middle" font-size="8" fill="var(--rose)">at 10 dB: QPSK 0/20  ·  BPSK 19/20</text>
+</svg>
+<figcaption>Without FEC, QPSK falls off a cliff around 10–12 dB — exactly where the automatic
+BPSK downshift, backed by ARQ, keeps the transfer alive.</figcaption>
+</figure>
+
+<table>
+<tr><th>Situation</th><th>Behaviour</th></tr>
+<tr><td>Clean channel</td><td>100% success, any size tested</td></tr>
+<tr><td>Moderate noise (≥ 18 dB SNR)</td><td>100%</td></tr>
+<tr><td>Marginal (14–16 dB)</td><td>small hit; ARQ mops it up</td></tr>
+<tr><td>Weak (10–12 dB)</td><td>QPSK cliff → automatic BPSK downshift rescues it</td></tr>
+<tr><td>Mild multipath (echo inside the 8 ms guard)</td><td>rides through</td></tr>
+<tr><td>Strong / long multipath</td><td>breaks on purpose — no equaliser yet</td></tr>
+<tr><td>Raw throughput</td><td>≈ 475 B/s at QPSK, ≈ 237 B/s at BPSK, minus the control-window overhead that keeps chat alive</td></tr>
+</table>
+
+<h2>The pieces</h2>
+<table>
+<tr><th>Piece</th><th>What it does</th></tr>
+<tr><td><strong>Modem</strong></td><td>Real OFDM: 8 kHz audio, 256-point FFT, 77 subcarriers in ~312–2688 Hz, 8 ms guard. Preamble + header + data symbols, CRC-32 per frame, no FEC.</td></tr>
+<tr><td><strong>Channel</strong></td><td>Carries the audio, enforces one-transmitter-at-a-time, can add real AWGN and multipath. Holds <strong>no</strong> protocol logic.</td></tr>
+<tr><td><strong>Client (station)</strong></td><td>All the intelligence: listen-before-talk, election &amp; failover, roster, chat, file transfer + ARQ, drop/resume.</td></tr>
+<tr><td><strong>Monitor</strong></td><td>Listens only. Scope + spectrum + waterfall + decode strip.</td></tr>
+</table>
+<p>A reference implementation in <strong>Python</strong> and a full <strong>Rust</strong> port track
+each other bit-for-bit.</p>
+
+<h2>What’s next</h2>
+<ul>
+<li><strong>Forward error correction</strong> (LDPC/RS) so weak-signal frames self-heal instead of
+leaning entirely on ARQ.</li>
+<li><strong>Channel estimation / equaliser</strong> so real-world multipath beyond the guard
+interval stops being a hard wall — this also unlocks true per-subcarrier adaptive bit loading.</li>
+<li><strong>Sound-card audio</strong> so two radios can pass ATCHAT over a real SSB link on the
+bench.</li>
+<li><strong>SDR / RF integration.</strong> By design this should touch only the channel layer; the
+modem and the protocol stay as they are.</li>
+</ul>
+
+<h2>Getting it</h2>
+<p>Prebuilt GUI and channel binaries for <strong>Windows (MSI + zip)</strong>, <strong>macOS</strong>
+(Intel + Apple Silicon) and <strong>Linux</strong> are published on the
+<a href="https://github.com/barisdinc/AtChat/releases">GitHub Releases page</a>. To run from source
+you only need <code>numpy</code> for the Python side, or a Rust toolchain for the
+<code>rust/</code> workspace. See <code>README.md</code> for the exact commands and
+<strong>PROTOCOL.md / the Protocol Specification</strong> for the full technical detail.</p>
+
+<p style="margin-top:28px;color:var(--muted);font-size:8.5pt">ATCHAT Overview · v0.1.1 · generated from <code>OVERVIEW.md</code></p>
+
+</div>
+</body>
+</html>

@@ -9,6 +9,16 @@ listen to that real audio.
 
 Dependencies: Python 3.9+ and `numpy` (`pip install numpy`).
 
+📖 **[`OVERVIEW.md`](OVERVIEW.md)** — what ATCHAT is and what it can do (plain
+language). **[`PROTOCOL.md`](PROTOCOL.md)** — the full technical specification:
+the OFDM waveform bit by bit, the frame catalogue, the session state machines
+and worked end-to-end scenarios.
+
+Nicely typeset **PDF** versions with proper diagrams live in
+[`docs/`](docs/): [`docs/OVERVIEW.pdf`](docs/OVERVIEW.pdf),
+[`docs/PROTOCOL.pdf`](docs/PROTOCOL.pdf) (regenerate from the `.html` sources
+beside them with headless Chrome `--print-to-pdf`).
+
 > **Rust port + GUI (`rust/`):** This entire Python simulation has been ported
 > to Rust and combined into a **cross-platform single-window egui app** —
 > Channel / Stations / Monitor tabs, a live scope + spectrum + waterfall and

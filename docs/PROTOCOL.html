@@ -1,0 +1,924 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ATCHAT Protocol Specification</title>
+<style>
+  :root{
+    --ink:#1f2937; --muted:#5b6b7f; --line:#94a3b8; --rule:#e2e8f0;
+    --blue:#1f6feb; --blue-t:#e8f1fd;
+    --teal:#0d9488; --teal-t:#dcf3f0;
+    --amber:#b45309; --amber-t:#fbeedd;
+    --violet:#6d28d9; --violet-t:#efe9fd;
+    --rose:#be123c; --rose-t:#fce7ec;
+    --slate-t:#f1f5f9;
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  html{-webkit-print-color-adjust:exact;print-color-adjust:exact}
+  body{font-family:var(--sans);color:var(--ink);line-height:1.62;font-size:10.4pt;margin:0}
+  .page{max-width:820px;margin:0 auto;padding:0 24px}
+
+  h1{font-size:26pt;line-height:1.15;margin:0 0 6px;letter-spacing:-.01em}
+  h2{font-size:16pt;margin:34px 0 10px;padding-top:8px;border-top:2px solid var(--ink);letter-spacing:-.01em;break-after:avoid}
+  h3{font-size:12pt;margin:22px 0 6px;color:#0f172a;break-after:avoid}
+  h4{font-size:10.6pt;margin:16px 0 4px;font-family:var(--mono);color:var(--blue);break-after:avoid}
+  p{margin:8px 0}
+  ul,ol{margin:8px 0;padding-left:22px}
+  li{margin:3px 0}
+  code{font-family:var(--mono);font-size:.86em;background:var(--slate-t);padding:1px 4px;border-radius:4px}
+  pre{font-family:var(--mono);font-size:8.7pt;line-height:1.5;background:#0f172a;color:#e2e8f0;padding:12px 14px;border-radius:8px;overflow:auto;break-inside:avoid}
+  pre code{background:none;color:inherit;padding:0}
+  a{color:var(--blue);text-decoration:none}
+  strong{font-weight:650}
+  hr{border:none;border-top:1px solid var(--rule);margin:22px 0}
+
+  .lede{font-size:11.6pt;color:#334155;margin:14px 0 4px}
+  .status{background:var(--amber-t);border:1px solid #eab876;border-left:4px solid var(--amber);
+          border-radius:8px;padding:10px 14px;margin:16px 0;font-size:9.7pt;color:#7c4a12}
+
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:8.9pt;break-inside:avoid}
+  th,td{border:1px solid var(--rule);padding:5px 8px;text-align:left;vertical-align:top}
+  th{background:var(--slate-t);font-weight:650}
+  td code{font-size:.92em}
+
+  figure{margin:18px 0;break-inside:avoid}
+  figure svg{width:100%;height:auto;display:block}
+  figcaption{font-size:8.4pt;color:var(--muted);margin-top:6px;text-align:center}
+  .mermaid{display:flex;justify-content:center;margin:6px 0}
+  .mermaid svg{max-width:100%;height:auto}
+
+  .toc{background:var(--slate-t);border:1px solid var(--rule);border-radius:10px;padding:14px 20px;margin:22px 0;font-size:9.3pt;columns:2;column-gap:28px}
+  .toc a{color:var(--ink)}
+  .toc ol{margin:0;padding-left:20px}
+
+  .kv{font-family:var(--mono);font-size:8.6pt}
+  .note{background:var(--blue-t);border-left:3px solid var(--blue);padding:8px 12px;border-radius:6px;font-size:9.2pt;margin:12px 0}
+
+  @page{size:A4;margin:15mm 14mm}
+  @media print{
+    h1{padding-top:0}
+    h2{break-before:page;border-top:none;padding-top:0}
+    h2#sec1{break-before:avoid}
+    .toc{break-after:page}
+    .no-break,figure,table,pre,.mermaid{break-inside:avoid}
+  }
+  svg text{font-family:var(--mono)}
+</style>
+</head>
+<body>
+<div class="page">
+
+<h1>ATCHAT Protocol Specification</h1>
+<p class="lede">A robust digital mode for amateur radio: SSTV-simple to operate, but able to
+carry image/file transfer with error correction (ARQ) plus a multi-station text net (NET) inside a
+single 2.7&nbsp;kHz SSB channel. Inspired by KG-STV, EasyPal and HSModem.</p>
+
+<div class="status">
+<strong>Status.</strong> Software design + simulation. The modem is a real OFDM
+modulator/demodulator producing and decoding real audio, with real bit errors under real
+simulated noise. The “channel” is a TCP server carrying those samples; it is not yet wired to a
+sound card or an SDR. Version described: <strong>0.1.1</strong>.
+</div>
+
+<div class="toc no-break">
+<strong>Contents</strong>
+<ol>
+<li><a href="#sec1">Layering model</a></li>
+<li><a href="#sec2">PHY layer — the OFDM modem</a></li>
+<li><a href="#sec3">Channel-access layer</a></li>
+<li><a href="#sec4">NET protocol frames</a></li>
+<li><a href="#sec5">Session state machines</a></li>
+<li><a href="#sec6">Chat</a></li>
+<li><a href="#sec7">Bulk transfer with ARQ</a></li>
+<li><a href="#sec8">Timing &amp; constant reference</a></li>
+<li><a href="#sec9">Use cases &amp; scenarios</a></li>
+<li><a href="#sec10">Known limitations &amp; roadmap</a></li>
+<li><a href="#sec11">Component map</a></li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="sec1">1 &nbsp;Layering model</h2>
+
+<p>Three layers, deliberately separated. Moving to a real radio is expected to replace only the
+<strong>channel-access</strong> layer (TCP transport → sound card / SDR); the PHY and the NET
+protocol are unchanged. Two implementations track each other bit-for-bit: the reference
+<strong>Python</strong> (<code>*.py</code> at the repo root) and a <strong>Rust</strong> port
+(<code>rust/</code>), cross-checked with vectors.</p>
+
+<figure>
+<svg viewBox="0 0 800 300" role="img" aria-label="Three-layer stack">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0L10 5L0 10z" fill="#475569"/>
+    </marker>
+  </defs>
+  <!-- layer 3 -->
+  <rect x="40" y="20" width="560" height="78" rx="10" fill="var(--violet-t)" stroke="var(--violet)"/>
+  <text x="60" y="45" font-size="13" font-weight="700" fill="#4c1d95">NET protocol</text>
+  <text x="60" y="63" font-size="10" fill="#4c1d95">client.py · rust crate `protocol`</text>
+  <text x="60" y="82" font-size="9.5" fill="#5b21b6">master election &amp; multi-level failover · roster · broadcast + directed chat ·</text>
+  <text x="60" y="94" font-size="9.5" fill="#5b21b6">block/CRC/ARQ file transfer · control window · adaptive modulation · drop/resume</text>
+  <!-- layer 2 -->
+  <rect x="40" y="110" width="560" height="72" rx="10" fill="var(--teal-t)" stroke="var(--teal)"/>
+  <text x="60" y="134" font-size="13" font-weight="700" fill="#115e59">Channel access</text>
+  <text x="60" y="152" font-size="10" fill="#115e59">channel_server.py · rust crate `channel`</text>
+  <text x="60" y="171" font-size="9.5" fill="#0f766e">half-duplex arbitration (one TX at a time) · broadcast to all · real AWGN + multipath · NO protocol logic</text>
+  <!-- layer 1 -->
+  <rect x="40" y="194" width="560" height="66" rx="10" fill="var(--blue-t)" stroke="var(--blue)"/>
+  <text x="60" y="218" font-size="13" font-weight="700" fill="#1e40af">PHY / modem</text>
+  <text x="60" y="236" font-size="10" fill="#1e40af">modem.py · rust crate `modem`</text>
+  <text x="60" y="252" font-size="9.5" fill="#1d4ed8">OFDM: preamble + header + data symbols · CRC-32 · no FEC</text>
+  <!-- SDR bracket -->
+  <path d="M626 110 h14 v72 h-14" fill="none" stroke="var(--rose)" stroke-width="1.5"/>
+  <text x="650" y="140" font-size="9.5" fill="var(--rose)">this layer is</text>
+  <text x="650" y="153" font-size="9.5" fill="var(--rose)">what a real</text>
+  <text x="650" y="166" font-size="9.5" fill="var(--rose)">SDR / sound</text>
+  <text x="650" y="179" font-size="9.5" fill="var(--rose)">card replaces</text>
+  <!-- flow arrows -->
+  <line x1="320" y1="98" x2="320" y2="110" stroke="#475569" marker-end="url(#ar)" marker-start="url(#ar)"/>
+  <line x1="320" y1="182" x2="320" y2="194" stroke="#475569" marker-end="url(#ar)" marker-start="url(#ar)"/>
+</svg>
+<figcaption>The layer split. Data flows down to modulate, up to demodulate; the channel layer holds no protocol state.</figcaption>
+</figure>
+
+<!-- ============================================================ -->
+<h2 id="sec2">2 &nbsp;PHY layer — the OFDM modem</h2>
+
+<h3>2.1 &nbsp;Parameters</h3>
+<table>
+<tr><th>Parameter</th><th>Symbol</th><th>Value</th><th>Notes</th></tr>
+<tr><td>Sample rate</td><td class="kv">SAMPLE_RATE</td><td>8000 Hz</td><td>audio pass-band</td></tr>
+<tr><td>FFT size</td><td class="kv">N</td><td>256</td><td>subcarrier spacing = 8000/256 = <strong>31.25 Hz</strong></td></tr>
+<tr><td>Cyclic prefix / guard</td><td class="kv">CP_LEN</td><td>64 samples</td><td><strong>8 ms</strong> guard interval</td></tr>
+<tr><td>OFDM symbol length</td><td class="kv">SYMBOL_LEN</td><td>320 samples</td><td><code>N + CP_LEN</code> → <strong>40 ms</strong> on air per symbol</td></tr>
+<tr><td>Data subcarriers</td><td class="kv">DATA_CARRIERS</td><td>bins 10…86 (77)</td><td><strong>312.5 – 2687.5 Hz</strong>, inside 2.7 kHz</td></tr>
+<tr><td>Preamble subcarriers</td><td class="kv">PREAMBLE_CARRIERS</td><td>even bins 2,4,…,126 (63)</td><td>Schmidl-Cox: even bins → two identical time-domain halves</td></tr>
+<tr><td>Header bits</td><td class="kv">HEADER_BITS</td><td>17</td><td>16-bit length + 1-bit mode flag</td></tr>
+<tr><td>Header repetition</td><td class="kv">HEADER_REPEAT</td><td>4</td><td>majority-voted at RX</td></tr>
+<tr><td>Reference carrier</td><td class="kv">DATA_CARRIERS[0]</td><td>bin 10, fixed <code>1+0j</code></td><td>carries no data; phase reference for differential coding</td></tr>
+<tr><td>Info carriers</td><td>—</td><td>76</td><td>DATA_CARRIERS minus the reference</td></tr>
+<tr><td>Integrity</td><td>—</td><td>CRC-32 (IEEE)</td><td><strong>no FEC / LDPC / RS</strong> — correction is the NET layer’s ARQ</td></tr>
+</table>
+<p>The fixed preamble sequence is <code>numpy.random.RandomState(1234).choice([1,-1], 63)</code>
+— a constant both ends know; the Rust port embeds the same sequence.</p>
+
+<h3>2.2 &nbsp;On-air waveform structure</h3>
+
+<figure>
+<svg viewBox="0 0 800 210" role="img" aria-label="Waveform timeline">
+  <!-- segments -->
+  <g font-size="10">
+    <rect x="30"  y="40" width="70"  height="46" fill="var(--slate-t)" stroke="var(--line)"/>
+    <rect x="100" y="40" width="90"  height="46" fill="var(--teal-t)"  stroke="var(--teal)"/>
+    <rect x="190" y="40" width="90"  height="46" fill="var(--blue-t)"  stroke="var(--blue)"/>
+    <rect x="280" y="40" width="90"  height="46" fill="var(--violet-t)" stroke="var(--violet)"/>
+    <rect x="370" y="40" width="90"  height="46" fill="var(--violet-t)" stroke="var(--violet)"/>
+    <rect x="460" y="40" width="20"  height="46" fill="#fff" stroke="var(--line)"/>
+    <text x="482" y="66">…</text>
+    <rect x="500" y="40" width="90"  height="46" fill="var(--violet-t)" stroke="var(--violet)"/>
+    <rect x="590" y="40" width="46"  height="46" fill="var(--slate-t)" stroke="var(--line)"/>
+    <text x="65"  y="60" text-anchor="middle" fill="var(--muted)">lead-in</text>
+    <text x="65"  y="73" text-anchor="middle" fill="var(--muted)" font-size="8">20–299 z</text>
+    <text x="145" y="60" text-anchor="middle" fill="#115e59">PREAMBLE</text>
+    <text x="145" y="73" text-anchor="middle" fill="#115e59" font-size="8">sync</text>
+    <text x="235" y="60" text-anchor="middle" fill="#1e40af">HEADER</text>
+    <text x="235" y="73" text-anchor="middle" fill="#1e40af" font-size="8">BPSK</text>
+    <text x="325" y="60" text-anchor="middle" fill="#4c1d95">DATA #0</text>
+    <text x="415" y="60" text-anchor="middle" fill="#4c1d95">DATA #1</text>
+    <text x="545" y="60" text-anchor="middle" fill="#4c1d95">DATA #M-1</text>
+    <text x="325" y="73" text-anchor="middle" fill="#4c1d95" font-size="8">QPSK / BPSK per header flag</text>
+    <text x="613" y="60" text-anchor="middle" fill="var(--muted)" font-size="8">tail</text>
+    <text x="613" y="73" text-anchor="middle" fill="var(--muted)" font-size="8">64 z</text>
+  </g>
+  <!-- sample ruler -->
+  <g font-size="8" fill="var(--muted)">
+    <line x1="100" y1="92" x2="590" y2="92" stroke="var(--line)"/>
+    <line x1="100" y1="88" x2="100" y2="96" stroke="var(--line)"/>
+    <line x1="190" y1="88" x2="190" y2="96" stroke="var(--line)"/>
+    <line x1="280" y1="88" x2="280" y2="96" stroke="var(--line)"/>
+    <text x="145" y="105" text-anchor="middle">320 smp / 40 ms</text>
+    <text x="235" y="105" text-anchor="middle">320 / 40 ms</text>
+    <text x="325" y="105" text-anchor="middle">320 / 40 ms</text>
+  </g>
+  <!-- fixed-cost brace -->
+  <path d="M100 120 q0 8 8 8 h74 q8 0 8 8 q0 -8 8 -8 h74 q8 0 8 -8" fill="none" stroke="var(--amber)"/>
+  <text x="235" y="150" text-anchor="middle" font-size="9" fill="var(--amber)">fixed cost every transmission = preamble + header = 80 ms</text>
+  <!-- one symbol build -->
+  <text x="30" y="180" font-size="9" fill="var(--ink)">Every symbol: assign carriers {k: X[k]} → impose X[N−k]=conj(X[k]) → real(IFFT) → prepend CP[−64:]</text>
+  <!-- normalise note -->
+  <text x="30" y="197" font-size="9" fill="var(--muted)">Waveform peak-normalised to 0.7·32767, emitted as little-endian int16 PCM, base64 on the wire.</text>
+</svg>
+<figcaption>Waveform layout. A random lead-in forces true correlation-based sync; the 64-sample tail absorbs a few-sample sync slip.</figcaption>
+</figure>
+
+<h3>2.3 &nbsp;Frequency-domain differential coding</h3>
+<p>Both the header and the data symbols carry information as the <strong>phase difference between
+adjacent subcarriers</strong>, not as an absolute phase. A small sync error produces a phase ramp
+that is roughly linear in the carrier index <code>k</code>; that ramp <strong>cancels between
+neighbours</strong>, leaving only a small constant residue. This buys noise robustness
+<strong>without any channel estimation or equaliser</strong> (classic differential OFDM).</p>
+
+<figure>
+<svg viewBox="0 0 800 200" role="img" aria-label="Differential coding chain and subcarrier map">
+  <!-- subcarrier map -->
+  <text x="30" y="24" font-size="10" font-weight="700">Subcarrier map (frequency, Hz)</text>
+  <line x1="40" y1="70" x2="760" y2="70" stroke="var(--ink)"/>
+  <g font-size="8" fill="var(--muted)">
+    <line x1="40"  y1="66" x2="40"  y2="74" stroke="var(--ink)"/><text x="40"  y="88" text-anchor="middle">0</text>
+    <line x1="220" y1="66" x2="220" y2="74" stroke="var(--ink)"/><text x="220" y="88" text-anchor="middle">1000</text>
+    <line x1="400" y1="66" x2="400" y2="74" stroke="var(--ink)"/><text x="400" y="88" text-anchor="middle">2000</text>
+    <line x1="580" y1="66" x2="580" y2="74" stroke="var(--ink)"/><text x="580" y="88" text-anchor="middle">3000</text>
+    <line x1="720" y1="66" x2="720" y2="74" stroke="var(--ink)"/><text x="720" y="88" text-anchor="middle">4000 (Nyq)</text>
+  </g>
+  <!-- data band -->
+  <rect x="96" y="44" width="388" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+  <text x="290" y="38" text-anchor="middle" font-size="9" fill="var(--blue)">77 data carriers · bins 10–86 · 312.5–2687.5 Hz  (inside 2.7 kHz SSB)</text>
+  <!-- reference carrier -->
+  <line x1="96" y1="40" x2="96" y2="70" stroke="var(--rose)" stroke-width="2"/>
+  <text x="96" y="112" text-anchor="middle" font-size="8" fill="var(--rose)">bin 10 = fixed 1+0j reference (no data)</text>
+  <!-- preamble carriers -->
+  <g stroke="var(--teal)">
+    <line x1="60" y1="58" x2="60" y2="70"/><line x1="72" y1="58" x2="72" y2="70"/>
+    <line x1="84" y1="58" x2="84" y2="70"/><line x1="120" y1="58" x2="120" y2="70"/>
+    <line x1="160" y1="58" x2="160" y2="70"/><line x1="240" y1="58" x2="240" y2="70"/>
+    <line x1="340" y1="58" x2="340" y2="70"/><line x1="440" y1="58" x2="440" y2="70"/>
+    <line x1="520" y1="58" x2="520" y2="70"/><line x1="600" y1="58" x2="600" y2="70"/>
+  </g>
+  <text x="655" y="56" font-size="8" fill="var(--teal)">preamble: even bins 2–126</text>
+
+  <!-- differential chain -->
+  <text x="30" y="140" font-size="10" font-weight="700">Differential cascade across carriers</text>
+  <g font-size="9">
+    <circle cx="70"  cy="168" r="14" fill="var(--rose-t)" stroke="var(--rose)"/><text x="70"  y="171" text-anchor="middle">1</text>
+    <circle cx="190" cy="168" r="14" fill="#fff" stroke="var(--ink)"/><text x="190" y="171" text-anchor="middle">s₁</text>
+    <circle cx="310" cy="168" r="14" fill="#fff" stroke="var(--ink)"/><text x="310" y="171" text-anchor="middle">s₂</text>
+    <circle cx="430" cy="168" r="14" fill="#fff" stroke="var(--ink)"/><text x="430" y="171" text-anchor="middle">s₃</text>
+    <text x="540" y="171">…  s₇₆</text>
+  </g>
+  <g stroke="var(--ink)" marker-end="url(#ar)">
+    <line x1="86" y1="168" x2="174" y2="168"/><line x1="206" y1="168" x2="294" y2="168"/><line x1="326" y1="168" x2="414" y2="168"/>
+  </g>
+  <g font-size="8" fill="var(--muted)">
+    <text x="130" y="160" text-anchor="middle">·step₀</text>
+    <text x="250" y="160" text-anchor="middle">·step₁</text>
+    <text x="370" y="160" text-anchor="middle">·step₂</text>
+  </g>
+  <text x="470" y="192" font-size="8.5" fill="var(--muted)">seq[k] = seq[k−1]·step[k−1];  RX: diff = V[k]·conj(V[k−1])</text>
+</svg>
+<figcaption>Top: which FFT bins carry what. Bottom: information rides the running product of unit-magnitude “steps”, so the decoder only ever compares neighbours.</figcaption>
+</figure>
+
+<h3>2.4 &nbsp;Header symbol (always BPSK)</h3>
+<table>
+<tr><th>Bits</th><th>Field</th><th>Meaning</th></tr>
+<tr><td>0..15</td><td class="kv">payload_len</td><td>length in bytes of <strong>payload + 4-byte CRC</strong>, MSB first: <code>bit i = (payload_len &gt;&gt; (15−i)) &amp; 1</code></td></tr>
+<tr><td>16</td><td class="kv">mode</td><td><strong>1 = BPSK</strong>, <strong>0 = QPSK</strong> — the modulation of the DATA symbols</td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 800 170" role="img" aria-label="Header bit layout">
+  <!-- 17-bit ruler -->
+  <g font-size="7.5">
+    <g>
+      <rect x="40" y="30" width="26" height="24" fill="var(--blue-t)" stroke="var(--blue)"/>
+      <rect x="66" y="30" width="26" height="24" fill="var(--blue-t)" stroke="var(--blue)"/>
+      <rect x="92" y="30" width="26" height="24" fill="var(--blue-t)" stroke="var(--blue)"/>
+      <text x="130" y="46">… 16-bit length (MSB→LSB) …</text>
+      <rect x="330" y="30" width="26" height="24" fill="var(--blue-t)" stroke="var(--blue)"/>
+      <rect x="356" y="30" width="26" height="24" fill="var(--blue-t)" stroke="var(--blue)"/>
+      <rect x="382" y="30" width="30" height="24" fill="var(--amber-t)" stroke="var(--amber)"/>
+      <text x="53" y="46" text-anchor="middle">L15</text>
+      <text x="79" y="46" text-anchor="middle">L14</text>
+      <text x="105" y="46" text-anchor="middle">L13</text>
+      <text x="343" y="46" text-anchor="middle">L1</text>
+      <text x="369" y="46" text-anchor="middle">L0</text>
+      <text x="397" y="46" text-anchor="middle" fill="var(--amber)">mode</text>
+    </g>
+  </g>
+  <text x="430" y="46" font-size="9" fill="var(--muted)">= 17 information bits</text>
+  <!-- tiling -->
+  <line x1="230" y1="58" x2="230" y2="76" stroke="var(--line)" marker-end="url(#ar)"/>
+  <text x="40" y="92" font-size="9">tile ×4  →  68 bits   ·   zero-pad → 76   ·   map onto the 76 info carriers via the differential cascade (BPSK step ±1)</text>
+  <!-- carriers -->
+  <g font-size="8">
+    <rect x="40" y="104" width="620" height="22" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <text x="350" y="119" text-anchor="middle" fill="var(--blue)">DATA_CARRIERS[1..76]  (bin 11 … 86)</text>
+  </g>
+  <!-- decode -->
+  <text x="40" y="150" font-size="9" fill="var(--muted)">RX: bit = (real(diff) &lt; 0) → 76 bits → reshape first 68 to 4×17 → majority vote per column (≥3 of 4) → length, mode.</text>
+  <text x="40" y="164" font-size="9" fill="var(--muted)">Sanity gate: accept only 4 ≤ payload_len ≤ 20000, else the whole transmission is treated as “not heard”.</text>
+</svg>
+<figcaption>The header is small, repeated and majority-voted — it must survive even when the data payload does not.</figcaption>
+</figure>
+
+<h3>2.5 &nbsp;Data symbols</h3>
+<table>
+<tr><th>Mode</th><th>Bits / carrier</th><th>Bits / OFDM symbol (76 carriers)</th><th>Bytes / symbol</th><th>Data rate (payload)</th></tr>
+<tr><td><strong>QPSK</strong> (default)</td><td>2</td><td>152</td><td>19</td><td>19 B / 40 ms ≈ <strong>475 B/s</strong></td></tr>
+<tr><td><strong>BPSK</strong> (robust)</td><td>1</td><td>76</td><td>9.5</td><td>≈ <strong>237 B/s</strong> — ~67% slower, far more noise-tolerant</td></tr>
+</table>
+<pre><code>QPSK   (b0,b1) -&gt; step               BPSK   b -&gt; step
+ (0,0) -&gt; ( 1+1j)/&#8730;2               0 -&gt; ( 1+0j)
+ (0,1) -&gt; ( 1-1j)/&#8730;2               1 -&gt; (-1+0j)
+ (1,0) -&gt; (-1+1j)/&#8730;2
+ (1,1) -&gt; (-1-1j)/&#8730;2</code></pre>
+<p>Bit-stream order is <strong>MSB-first</strong> over the payload bytes. For QPSK, carrier
+<code>k</code> carries bits <code>[2k, 2k+1]</code>. Decoding per differential value <code>d</code>:
+QPSK <code>bit0 = real(d)&lt;0</code>, <code>bit1 = imag(d)&lt;0</code>; BPSK <code>bit = real(d)&lt;0</code>.
+Concatenate all symbols’ bits, truncate to <code>payload_len·8</code>, pack to bytes → <code>full</code>.</p>
+
+<h3>2.6 &nbsp;Payload framing &amp; CRC</h3>
+<pre><code>full = payload  &#8214;  CRC32(payload) as 4 bytes big-endian</code></pre>
+<p>RX splits <code>payload = full[:payload_len−4]</code> and <strong>rejects the frame</strong>
+(returns “nothing”) if <code>crc32(payload) != crc_recv</code>. There is no partial-frame recovery
+at the PHY — that is the ARQ layer’s job.</p>
+
+<h3>2.7 &nbsp;Synchronisation (Schmidl-Cox style)</h3>
+
+<figure>
+<svg viewBox="0 0 800 180" role="img" aria-label="Sync plateau to peak">
+  <!-- raw score -->
+  <text x="40" y="22" font-size="10" font-weight="700">raw correlation score</text>
+  <polyline points="40,120 120,116 180,60 210,58 280,58 300,58 330,112 420,118" fill="none" stroke="var(--line)" stroke-width="2"/>
+  <rect x="180" y="52" width="120" height="70" fill="var(--teal-t)" opacity=".5"/>
+  <text x="240" y="46" text-anchor="middle" font-size="8" fill="var(--teal)">plateau (CP is a copy of the periodic preamble)</text>
+  <!-- smoothed -->
+  <text x="440" y="22" font-size="10" font-weight="700">after CP_LEN moving average</text>
+  <polyline points="440,120 520,116 570,70 600,44 620,70 700,116 760,118" fill="none" stroke="var(--blue)" stroke-width="2"/>
+  <line x1="600" y1="44" x2="600" y2="130" stroke="var(--rose)" stroke-dasharray="3 2"/>
+  <text x="600" y="144" text-anchor="middle" font-size="8" fill="var(--rose)">argmax</text>
+  <text x="600" y="156" text-anchor="middle" font-size="8" fill="var(--muted)">best_ps = argmax + CP_LEN</text>
+  <text x="440" y="170" font-size="8.5" fill="var(--muted)">threshold: peak &lt; 0.25 → decide “silence”.  Symbol i = x[preamble_cp_start + i·320 + 64 : +256].</text>
+</svg>
+<figcaption>The single smoothed peak is robust; the raw plateau’s edge is not. i = 0 preamble, 1 header, ≥ 2 data.</figcaption>
+</figure>
+
+<h3>2.8 &nbsp;Time on air</h3>
+<pre><code>bits_needed     = payload_len * 8              # payload_len already includes the CRC
+bits_per_symbol = 152 (QPSK) | 76 (BPSK)
+data_symbols    = ceil(bits_needed / bits_per_symbol)
+airtime         = (2 + data_symbols) * 320 / 8000  seconds   # = (2 + data_symbols) * 40 ms</code></pre>
+<p>Fixed cost per transmission: preamble + header = <strong>80 ms</strong>. A 220-byte file block,
+wrapped in its <code>BULK_BLOCK</code> JSON (~420 bytes on the wire), is ≈ 1.0 s on air at QPSK.</p>
+
+<h3>2.9 &nbsp;Measured performance (real, not modelled)</h3>
+<table>
+<tr><th>Condition</th><th>Result</th></tr>
+<tr><td>Noiseless</td><td>100% (1 B … 5000 B)</td></tr>
+<tr><td>AWGN, SNR ≥ 18 dB</td><td>100%</td></tr>
+<tr><td>AWGN, 14–16 dB</td><td>slight degradation</td></tr>
+<tr><td>AWGN, 10–12 dB</td><td>sharp <strong>cliff</strong> for QPSK without FEC (expected COFDM behaviour)</td></tr>
+<tr><td>AWGN, 10 dB</td><td>QPSK 0/20 vs <strong>BPSK 19/20</strong> — the reason adaptive downshift exists</td></tr>
+<tr><td>Multipath, delay ≤ 7 ms, echo ≤ −16 dB</td><td>solid (rides inside the 8 ms guard)</td></tr>
+<tr><td>Multipath, delay &gt; 8 ms <strong>or</strong> echo ≥ −10 dB</td><td>breaks on purpose — no channel estimator (§10)</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="sec3">3 &nbsp;Channel-access layer</h2>
+
+<h3>3.1 &nbsp;Transport envelope (line-delimited JSON over TCP)</h3>
+<p>Each message is one UTF-8 JSON object followed by <code>\n</code>.</p>
+<p><strong>Client → channel</strong></p>
+<table>
+<tr><th><code>cmd</code></th><th>Fields</th><th>Meaning</th></tr>
+<tr><td class="kv">HELLO</td><td class="kv">callsign</td><td>register on connect</td></tr>
+<tr><td class="kv">TRANSMIT_AUDIO</td><td class="kv">audio_b64</td><td>base64 of little-endian int16 PCM — a full modem transmission</td></tr>
+</table>
+<p><strong>Channel → client</strong></p>
+<table>
+<tr><th><code>type</code></th><th>Fields</th><th>Meaning</th></tr>
+<tr><td class="kv">TX_GRANTED</td><td class="kv">duration (s)</td><td>you hold the channel for <code>duration</code>; the sender then sleeps that long (“keyed up”)</td></tr>
+<tr><td class="kv">CHANNEL_BUSY</td><td class="kv">retry_after (s)</td><td>someone else is transmitting; try again after <code>retry_after</code></td></tr>
+<tr><td class="kv">RX_AUDIO</td><td class="kv">audio_b64</td><td>a transmission delivered to <strong>every</strong> connected station (including the sender)</td></tr>
+</table>
+
+<h3>3.2 &nbsp;Half-duplex arbitration</h3>
+<p>The channel keeps a single <code>busy_until</code> timestamp. There is <strong>no queue</strong>
+and <strong>no priority</strong> — pure listen-before-talk; all back-off intelligence is on the
+client. Delivery is deliberately delayed by <code>duration</code> so airtime is physically modelled.</p>
+
+<figure>
+<svg viewBox="0 0 800 180" role="img" aria-label="Half-duplex timeline">
+  <!-- lanes -->
+  <text x="30" y="34" font-size="9" fill="var(--muted)">channel</text>
+  <text x="30" y="86" font-size="9" fill="var(--muted)">TA1ABC</text>
+  <text x="30" y="138" font-size="9" fill="var(--muted)">TA2DEF</text>
+  <line x1="80" y1="30" x2="770" y2="30" stroke="var(--rule)"/>
+  <line x1="80" y1="82" x2="770" y2="82" stroke="var(--rule)"/>
+  <line x1="80" y1="134" x2="770" y2="134" stroke="var(--rule)"/>
+  <!-- channel busy block -->
+  <rect x="150" y="18" width="300" height="24" rx="4" fill="var(--blue-t)" stroke="var(--blue)"/>
+  <text x="300" y="34" text-anchor="middle" font-size="8.5" fill="var(--blue)">busy_until = now + duration  (TA1ABC on air)</text>
+  <!-- A grant -->
+  <rect x="150" y="70" width="300" height="24" rx="4" fill="var(--teal-t)" stroke="var(--teal)"/>
+  <text x="300" y="86" text-anchor="middle" font-size="8.5" fill="var(--teal)">TX_GRANTED{duration} → sleep(duration)</text>
+  <line x1="150" y1="52" x2="150" y2="70" stroke="var(--teal)" marker-end="url(#ar)"/>
+  <text x="150" y="64" text-anchor="middle" font-size="8" fill="var(--teal)">TRANSMIT_AUDIO</text>
+  <!-- B busy then retry -->
+  <line x1="250" y1="150" x2="250" y2="134" stroke="var(--rose)" marker-end="url(#ar)"/>
+  <text x="250" y="164" text-anchor="middle" font-size="8" fill="var(--rose)">TRANSMIT_AUDIO</text>
+  <rect x="250" y="122" width="120" height="12" fill="var(--rose-t)" stroke="var(--rose)"/>
+  <text x="310" y="118" text-anchor="middle" font-size="8" fill="var(--rose)">CHANNEL_BUSY{retry_after}</text>
+  <line x1="470" y1="150" x2="470" y2="134" stroke="var(--amber)" marker-end="url(#ar)"/>
+  <text x="470" y="164" text-anchor="middle" font-size="8" fill="var(--amber)">retry (after retry_after + jitter)</text>
+  <!-- deliver -->
+  <line x1="450" y1="30" x2="450" y2="108" stroke="var(--blue)" stroke-dasharray="3 3"/>
+  <line x1="450" y1="108" x2="200" y2="108" stroke="var(--blue)" stroke-dasharray="3 3" marker-end="url(#ar)"/>
+  <text x="300" y="176" font-size="8" fill="var(--blue)">after `duration`: apply_impairments(samples) → RX_AUDIO broadcast to ALL</text>
+</svg>
+<figcaption>One transmitter at a time. The jittered client back-off (below) is what stops two stations colliding forever on the same <code>retry_after</code>.</figcaption>
+</figure>
+
+<h3>3.3 &nbsp;Client-side LBT + exponential back-off</h3>
+<figure>
+<svg viewBox="0 0 800 230" role="img" aria-label="send_frame flowchart">
+  <defs></defs>
+  <rect x="300" y="14" width="200" height="30" rx="15" fill="var(--slate-t)" stroke="var(--line)"/>
+  <text x="400" y="33" text-anchor="middle" font-size="9">modulate(frame) → audio_b64</text>
+
+  <rect x="300" y="64" width="200" height="30" rx="6" fill="#fff" stroke="var(--ink)"/>
+  <text x="400" y="83" text-anchor="middle" font-size="9">send TRANSMIT_AUDIO · wait ≤ 8 s</text>
+
+  <polygon points="400,110 520,140 400,170 280,140" fill="var(--blue-t)" stroke="var(--blue)"/>
+  <text x="400" y="138" text-anchor="middle" font-size="9">reply?</text>
+  <text x="400" y="151" text-anchor="middle" font-size="8" fill="var(--muted)">(≤ 40 attempts)</text>
+
+  <rect x="560" y="124" width="210" height="30" rx="6" fill="var(--teal-t)" stroke="var(--teal)"/>
+  <text x="665" y="139" text-anchor="middle" font-size="9">TX_GRANTED → sleep(duration)</text>
+  <text x="665" y="150" text-anchor="middle" font-size="8" fill="var(--teal)">success — channel held</text>
+
+  <rect x="250" y="188" width="300" height="30" rx="6" fill="var(--amber-t)" stroke="var(--amber)"/>
+  <text x="400" y="203" text-anchor="middle" font-size="9">CHANNEL_BUSY → sleep(retry_after + U(0.05,0.30))</text>
+  <text x="400" y="214" text-anchor="middle" font-size="8" fill="var(--amber)">backoff = min(backoff·1.7, 3.0)</text>
+
+  <line x1="400" y1="44" x2="400" y2="64" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <line x1="400" y1="94" x2="400" y2="110" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <line x1="520" y1="140" x2="560" y2="139" stroke="var(--teal)" marker-end="url(#ar)"/>
+  <line x1="400" y1="170" x2="400" y2="188" stroke="var(--amber)" marker-end="url(#ar)"/>
+  <path d="M250 203 q-60 0 -60 -60 q0 -79 150 -79" fill="none" stroke="var(--amber)" marker-end="url(#ar)"/>
+</svg>
+<figcaption>Only one frame at a time leaves a station (an async “PTT” lock). Give up after 40 attempts → “channel stayed busy”.</figcaption>
+</figure>
+
+<h3>3.4 &nbsp;Impairments (optional, for realism)</h3>
+<p>Applied in order to the int16 samples before broadcast: <strong>(1) multipath echo</strong>
+<code>x += gain · delay(x, d)</code> where <code>d = delay_ms/1000 · 8000</code> samples (meaningful
+up to the 8 ms guard); <strong>(2) AWGN</strong> with power <code>mean(x²) / 10^(SNR_dB/10)</code>.
+CLI: <code>--snr</code>, <code>--multipath-delay-ms</code>, <code>--multipath-gain</code>.</p>
+
+<!-- ============================================================ -->
+<h2 id="sec4">4 &nbsp;NET protocol frames</h2>
+<p>The NET protocol lives <strong>inside</strong> the modulated payload: <code>frame</code> is a
+JSON object, <code>json.dumps</code>-ed, handed to <code>modem.modulate</code>, and recovered by
+<code>modem.demodulate</code> + <code>json.loads</code> on every receiver.</p>
+
+<h3>4.1 &nbsp;Common envelope</h3>
+<table>
+<tr><th>Field</th><th>Type</th><th>Notes</th></tr>
+<tr><td class="kv">type</td><td>string</td><td>one of the types below</td></tr>
+<tr><td class="kv">src</td><td>string</td><td>sender callsign</td></tr>
+<tr><td class="kv">dst</td><td>string</td><td><code>"ALL"</code> for broadcast, or a callsign for directed. Default <code>"ALL"</code></td></tr>
+</table>
+<p>A receiver acts on a frame when <code>dst &#8712; {"ALL", own callsign}</code>. A station ignores its own <code>src</code>.</p>
+
+<h3>4.2 &nbsp;Frame catalogue</h3>
+
+<h4>JOIN_REQUEST</h4>
+<p><code>{type, src, dst:"ALL"}</code>. Announces arrival — sent on first connect and on every
+<code>/reconnect</code>. If a receiver has a half-finished <em>inbound</em> transfer from
+<code>src</code>, seeing this frame makes it re-issue the <code>BULK_STATUS</code> for the
+missing blocks.</p>
+
+<h4>BEACON</h4>
+<table>
+<tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+<tr><td class="kv">src / dst</td><td>master callsign / "ALL"</td><td></td></tr>
+<tr><td class="kv">backup</td><td>string | null</td><td>the assigned backup master (smallest active peer callsign)</td></tr>
+<tr><td class="kv">roster</td><td>string[]</td><td><code>[master, …all known callsigns]</code></td></tr>
+</table>
+<p>Sent by the master every <code>BEACON_INTERVAL</code> (8 s), always in <strong>BPSK</strong>. It
+is the heartbeat, the roster sync, and the implicit <code>MASTER_CLAIM</code>.</p>
+
+<h4>CHAT</h4>
+<p><code>{type, src, dst:"ALL"|callsign, text}</code>. Broadcast vs. directed. Sent in
+<strong>BPSK</strong> (robustness over speed for short text).</p>
+
+<h4>BULK_META</h4>
+<p><code>{type, src, dst, transfer_id, filename, total_blocks, total_size}</code> — starts a
+file/image transfer. <code>transfer_id</code> is 8 hex chars; <code>total_blocks =
+ceil(total_size / 220)</code>.</p>
+
+<h4>BULK_BLOCK</h4>
+<table>
+<tr><th>Field</th><th>Type</th><th>Meaning</th></tr>
+<tr><td class="kv">transfer_id</td><td>string</td><td></td></tr>
+<tr><td class="kv">seq</td><td>int</td><td>block index <code>0 … total_blocks−1</code></td></tr>
+<tr><td class="kv">data</td><td>string</td><td>base64 of ≤ <code>BLOCK_SIZE</code> (220) raw bytes</td></tr>
+<tr><td class="kv">crc</td><td>uint32</td><td><code>crc32(raw_block)</code> — per-block integrity</td></tr>
+</table>
+<p>Sent in the transfer’s current mode (QPSK, or BPSK after an adaptive downshift). A block whose
+<code>crc</code> fails on receipt is silently dropped; ARQ re-requests it.</p>
+
+<h4>BULK_END</h4>
+<p><code>{type, src, dst, transfer_id}</code> — “that’s all the blocks I have for now.”</p>
+
+<h4>BULK_STATUS</h4>
+<p><code>{type, src:receiver, dst:sender, transfer_id, missing:int[]}</code> — the receiver’s
+ACK/NAK. <code>missing == []</code> ⇒ complete. Sent in <strong>BPSK</strong> from the
+end-of-transfer path; the drop/resume paths use the station’s default mode.</p>
+
+<!-- ============================================================ -->
+<h2 id="sec5">5 &nbsp;Session state machines</h2>
+
+<h3>5.1 &nbsp;Roster</h3>
+<p>Every station keeps <code>roster: {callsign → {last_seen, status}}</code> locally, updated on
+every decoded frame from that callsign and from every <code>BEACON</code>’s <code>roster</code> list.</p>
+
+<figure>
+<svg viewBox="0 0 800 130" role="img" aria-label="Roster state machine">
+  <rect x="90"  y="46" width="120" height="40" rx="20" fill="var(--teal-t)" stroke="var(--teal)"/>
+  <text x="150" y="70" text-anchor="middle" font-size="10" fill="#115e59">ACTIVE</text>
+  <rect x="360" y="46" width="120" height="40" rx="20" fill="var(--amber-t)" stroke="var(--amber)"/>
+  <text x="420" y="70" text-anchor="middle" font-size="10" fill="#7c4a12">LOST</text>
+  <rect x="620" y="46" width="140" height="40" rx="8" fill="var(--slate-t)" stroke="var(--line)" stroke-dasharray="4 3"/>
+  <text x="690" y="70" text-anchor="middle" font-size="10" fill="var(--muted)">removed</text>
+
+  <line x1="210" y1="62" x2="360" y2="62" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <text x="285" y="54" text-anchor="middle" font-size="8" fill="var(--muted)">no frame for 30 s (LOST_TIMEOUT)</text>
+  <path d="M360 74 q-75 34 -150 0" fill="none" stroke="var(--teal)" marker-end="url(#ar)"/>
+  <text x="285" y="104" text-anchor="middle" font-size="8" fill="var(--teal)">frame heard again</text>
+  <line x1="480" y1="66" x2="620" y2="66" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <text x="550" y="58" text-anchor="middle" font-size="8" fill="var(--muted)">no frame for 120 s total (REMOVE_TIMEOUT)</text>
+  <path d="M150 46 q0 -34 30 -34 q30 0 30 34" fill="none" stroke="var(--teal)" marker-end="url(#ar)"/>
+  <text x="150" y="20" text-anchor="middle" font-size="8" fill="var(--teal)">any frame heard</text>
+</svg>
+</figure>
+
+<h3>5.2 &nbsp;Roles</h3>
+<figure>
+<svg viewBox="0 0 800 150" role="img" aria-label="Role state machine">
+  <rect x="60"  y="56" width="140" height="40" rx="8" fill="var(--slate-t)" stroke="var(--line)"/>
+  <text x="130" y="80" text-anchor="middle" font-size="10">LISTENER</text>
+  <rect x="330" y="56" width="140" height="40" rx="8" fill="var(--amber-t)" stroke="var(--amber)"/>
+  <text x="400" y="80" text-anchor="middle" font-size="10" fill="#7c4a12">BACKUP</text>
+  <rect x="600" y="56" width="140" height="40" rx="8" fill="var(--violet-t)" stroke="var(--violet)"/>
+  <text x="670" y="80" text-anchor="middle" font-size="10" fill="#4c1d95">MASTER</text>
+
+  <path d="M200 70 h130" fill="none" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <path d="M330 84 h-130" fill="none" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <text x="265" y="60" text-anchor="middle" font-size="8" fill="var(--muted)">beacon names me `backup`</text>
+  <text x="265" y="100" text-anchor="middle" font-size="8" fill="var(--muted)">beacon names someone else</text>
+
+  <path d="M200 62 q200 -60 400 -6" fill="none" stroke="var(--violet)" marker-end="url(#ar)"/>
+  <text x="400" y="26" text-anchor="middle" font-size="8" fill="var(--violet)">no beacon for BEACON_TIMEOUT + pos·BEACON_INTERVAL  (and I am the surviving successor)</text>
+
+  <path d="M600 92 q-200 54 -400 6" fill="none" stroke="var(--rose)" marker-end="url(#ar)"/>
+  <text x="400" y="140" text-anchor="middle" font-size="8" fill="var(--rose)">hear a BEACON from a lexicographically smaller callsign  →  step down (tie-break)</text>
+</svg>
+<figcaption>On <code>/reconnect</code> a station forces itself to LISTENER and only sends JOIN_REQUEST — it never claims master while a beacon is alive.</figcaption>
+</figure>
+
+<h3>5.3 &nbsp;Master election &amp; multi-level failover</h3>
+<p>The old design chained through <strong>one</strong> assigned backup only. It now uses a
+<strong>succession line</strong> that every station derives identically from its own roster:</p>
+<pre><code>succession_line = sorted( {self} &#8746; {peers with status == ACTIVE}  &#92;  {presumed-dead master} )
+pos             = index of self in that line
+
+claim mastership when:   time_since_last_beacon  &gt;  BEACON_TIMEOUT + pos * BEACON_INTERVAL</code></pre>
+
+<figure>
+<svg viewBox="0 0 800 220" role="img" aria-label="Succession line failover timeline">
+  <!-- line -->
+  <text x="30" y="24" font-size="10" font-weight="700">succession line (identical on every station)</text>
+  <g font-size="9">
+    <rect x="40"  y="34" width="150" height="30" rx="6" fill="var(--violet-t)" stroke="var(--violet)"/><text x="115" y="53" text-anchor="middle">pos 0 · TA2BBB</text>
+    <rect x="210" y="34" width="150" height="30" rx="6" fill="var(--slate-t)" stroke="var(--line)"/><text x="285" y="53" text-anchor="middle">pos 1 · TA3CCC</text>
+    <rect x="380" y="34" width="150" height="30" rx="6" fill="var(--slate-t)" stroke="var(--line)"/><text x="455" y="53" text-anchor="middle">pos 2 · TA4DDD</text>
+    <text x="545" y="53" font-size="8" fill="var(--muted)">(TA1AAA = presumed-dead master, excluded)</text>
+  </g>
+  <!-- time axis -->
+  <line x1="40" y1="110" x2="760" y2="110" stroke="var(--ink)"/>
+  <g font-size="8" fill="var(--muted)">
+    <line x1="40" y1="106" x2="40" y2="114" stroke="var(--ink)"/><text x="40" y="128" text-anchor="middle">last beacon</text>
+    <line x1="300" y1="106" x2="300" y2="114" stroke="var(--ink)"/><text x="300" y="128" text-anchor="middle">+24 s</text>
+    <line x1="470" y1="106" x2="470" y2="114" stroke="var(--ink)"/><text x="470" y="128" text-anchor="middle">+32 s</text>
+    <line x1="640" y1="106" x2="640" y2="114" stroke="var(--ink)"/><text x="640" y="128" text-anchor="middle">+40 s</text>
+  </g>
+  <circle cx="300" cy="110" r="5" fill="var(--violet)"/><text x="300" y="98" text-anchor="middle" font-size="8" fill="var(--violet)">pos 0 may claim</text>
+  <circle cx="470" cy="110" r="5" fill="var(--ink)"/><text x="470" y="98" text-anchor="middle" font-size="8">pos 1 may claim</text>
+  <circle cx="640" cy="110" r="5" fill="var(--ink)"/><text x="640" y="98" text-anchor="middle" font-size="8">pos 2 may claim</text>
+  <text x="40" y="160" font-size="9">Higher-priority survivors key up first. As a dead peer ahead ages to LOST it drops off the line and</text>
+  <text x="40" y="174" font-size="9">everyone below advances — so the chain continues arbitrarily deep, not just one backup.</text>
+  <text x="40" y="194" font-size="9" fill="var(--muted)">Bootstrap (master == null): immediate takeover — the first station on an empty channel.</text>
+  <text x="40" y="208" font-size="9" fill="var(--rose)">Tie-break for a simultaneous claim: the lexicographically smaller callsign wins; the other drops to LISTENER.</text>
+</svg>
+</figure>
+
+<div class="note"><strong>Implementation invariant (the deadlock rule).</strong> Any frame that must
+be <em>sent in response to a received frame</em> (<code>BULK_STATUS</code> after
+<code>BULK_END</code>, the resume <code>BULK_STATUS</code> after a <code>JOIN_REQUEST</code>, …) is
+dispatched as a <strong>background task</strong> — never <code>await</code>-ed on the single
+receive loop’s call chain, because that loop is also what delivers the <code>TX_GRANTED</code> for
+that very send.</div>
+
+<!-- ============================================================ -->
+<h2 id="sec6">6 &nbsp;Chat</h2>
+<ul>
+<li><strong>Broadcast:</strong> <code>CHAT{dst:"ALL", text}</code>. Every station with
+<code>dst &#8712; {"ALL", self}</code> displays it.</li>
+<li><strong>Directed / private:</strong> <code>CHAT{dst:"TA2XYZ", text}</code>. Only
+<code>TA2XYZ</code> displays it; it still occupies the shared channel, it is just not
+<em>addressed</em> to anyone else.</li>
+<li>Sent in BPSK. Contends via the same LBT + back-off as any frame — nothing is dropped, it
+waits its turn, including waiting for a <strong>control window</strong> if a bulk transfer is in
+progress (§7.3).</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="sec7">7 &nbsp;Bulk transfer (image / file) with ARQ</h2>
+
+<figure>
+<svg viewBox="0 0 800 300" role="img" aria-label="Bulk transfer and ARQ flow">
+  <rect x="300" y="12" width="200" height="28" rx="6" fill="var(--slate-t)" stroke="var(--line)"/>
+  <text x="400" y="30" text-anchor="middle" font-size="9">split file → ceil(size/220) blocks</text>
+
+  <rect x="300" y="54" width="200" height="26" rx="6" fill="#fff" stroke="var(--ink)"/>
+  <text x="400" y="71" text-anchor="middle" font-size="9">send BULK_META</text>
+
+  <rect x="290" y="94" width="220" height="40" rx="6" fill="var(--blue-t)" stroke="var(--blue)"/>
+  <text x="400" y="110" text-anchor="middle" font-size="9">send each BULK_BLOCK</text>
+  <text x="400" y="124" text-anchor="middle" font-size="8" fill="var(--blue)">every K blocks → control-window pause</text>
+
+  <rect x="300" y="148" width="200" height="26" rx="6" fill="#fff" stroke="var(--ink)"/>
+  <text x="400" y="165" text-anchor="middle" font-size="9">send BULK_END</text>
+
+  <polygon points="400,188 540,222 400,256 260,222" fill="var(--amber-t)" stroke="var(--amber)"/>
+  <text x="400" y="218" text-anchor="middle" font-size="9">BULK_STATUS.missing</text>
+  <text x="400" y="231" text-anchor="middle" font-size="8" fill="var(--muted)">wait ≤ 6 s · ≤ 6 rounds</text>
+
+  <rect x="560" y="206" width="220" height="32" rx="6" fill="var(--teal-t)" stroke="var(--teal)"/>
+  <text x="670" y="222" text-anchor="middle" font-size="9">empty → complete, bit-exact</text>
+  <text x="670" y="233" text-anchor="middle" font-size="8" fill="var(--teal)">file written to received/&lt;id&gt;_&lt;name&gt;</text>
+
+  <rect x="20" y="196" width="220" height="48" rx="6" fill="var(--rose-t)" stroke="var(--rose)"/>
+  <text x="130" y="214" text-anchor="middle" font-size="9">non-empty → _adapt_mode()</text>
+  <text x="130" y="227" text-anchor="middle" font-size="8" fill="var(--rose)">if QPSK &amp; loss &gt; 15% → BPSK</text>
+  <text x="130" y="239" text-anchor="middle" font-size="8" fill="var(--rose)">resend those blocks, BULK_END</text>
+
+  <line x1="400" y1="40" x2="400" y2="54" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <line x1="400" y1="80" x2="400" y2="94" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <line x1="400" y1="134" x2="400" y2="148" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <line x1="400" y1="174" x2="400" y2="188" stroke="var(--ink)" marker-end="url(#ar)"/>
+  <line x1="540" y1="222" x2="560" y2="222" stroke="var(--teal)" marker-end="url(#ar)"/>
+  <line x1="260" y1="222" x2="240" y2="222" stroke="var(--rose)" marker-end="url(#ar)"/>
+  <path d="M130 196 q0 -84 160 -90" fill="none" stroke="var(--rose)" stroke-dasharray="3 3" marker-end="url(#ar)"/>
+  <text x="150" y="110" font-size="8" fill="var(--rose)">resend loop</text>
+</svg>
+<figcaption>Rounds exhausted → the transfer is <strong>suspended</strong>, not failed: it resumes automatically if the receiver reappears (§7.5).</figcaption>
+</figure>
+
+<h3>7.1 &nbsp;Receiver</h3>
+<ol>
+<li><code>BULK_META</code> → create the inbound transfer, <code>received = {}</code>.</li>
+<li><code>BULK_BLOCK</code> → verify <code>crc32(data) == crc</code>; on match store
+<code>received[seq]</code>, on mismatch drop it.</li>
+<li><code>BULK_END</code> → <code>missing = [s for s in 0…total_blocks−1 if s not in received]</code>.
+Send <code>BULK_STATUS{missing}</code> (background task). If <code>missing == []</code>, write the
+file and mark complete.</li>
+</ol>
+
+<h3>7.2 &nbsp;Control window — keeping chat and beacons alive during a transfer</h3>
+<p>A back-to-back block stream would monopolise the half-duplex channel: chat, and even
+<strong>beacons</strong>, would starve, and stations would wrongly elect themselves master. So
+<code>_send_blocks</code> deliberately <strong>pauses</strong> to open the channel.</p>
+<table>
+<tr><th>State</th><th>Pause every</th><th>Pause length</th></tr>
+<tr><td><strong>Quiet</strong> (baseline)</td><td><code>CONTROL_WINDOW_EVERY = 3</code> blocks</td><td><code>CONTROL_WINDOW_PAUSE = 1.2 s</code></td></tr>
+<tr><td><strong>Busy</strong> (contended)</td><td><code>1</code> block</td><td><code>1.5 s</code></td></tr>
+</table>
+
+<figure>
+<svg viewBox="0 0 800 160" role="img" aria-label="Control window timeline">
+  <text x="30" y="30" font-size="9" fill="var(--muted)">quiet</text>
+  <g>
+    <rect x="70" y="18" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="106" y="18" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="142" y="18" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="178" y="18" width="60" height="20" fill="var(--slate-t)" stroke="var(--line)"/>
+    <text x="208" y="32" text-anchor="middle" font-size="7.5" fill="var(--muted)">1.2 s gap</text>
+    <rect x="240" y="18" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="276" y="18" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="312" y="18" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="348" y="18" width="60" height="20" fill="var(--slate-t)" stroke="var(--line)"/>
+  </g>
+  <text x="30" y="76" font-size="9" fill="var(--muted)">busy</text>
+  <g>
+    <rect x="70" y="64" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="106" y="64" width="50" height="20" fill="var(--slate-t)" stroke="var(--line)"/>
+    <rect x="156" y="64" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="190" y="64" width="50" height="20" fill="var(--amber-t)" stroke="var(--amber)"/>
+    <text x="215" y="78" text-anchor="middle" font-size="7.5" fill="var(--amber)">CHAT</text>
+    <rect x="240" y="64" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+    <rect x="274" y="64" width="50" height="20" fill="var(--slate-t)" stroke="var(--line)"/>
+    <rect x="324" y="64" width="34" height="20" fill="var(--blue-t)" stroke="var(--blue)"/>
+  </g>
+  <text x="30" y="118" font-size="8.5" fill="var(--ink)">“Contended” = a local chat/msg is queued, OR a peer sent CHAT / JOIN_REQUEST / BULK_STATUS within</text>
+  <text x="30" y="131" font-size="8.5" fill="var(--ink)">the last CONTROL_CONTENDED_FOR = 6 s. The window widens automatically and relaxes back on its own.</text>
+  <text x="30" y="150" font-size="8.5" fill="var(--muted)">A competing station only knows roughly when a block ends (retry_after), not when the window opens — so it must be generous.</text>
+</svg>
+</figure>
+
+<h3>7.3 &nbsp;Adaptive modulation</h3>
+<p>No pilot-based per-subcarrier bit loading yet (needs a channel estimator — §10). Instead the
+ARQ round <em>is</em> the link-quality signal:</p>
+<pre><code>if mode == QPSK and (missing_this_round / blocks_sent_last_round) &gt; 0.15:
+        mode &#8592; BPSK        # for the rest of this transfer; downshift only</code></pre>
+<p>The receiver needs no notification — every frame’s <strong>header carries its own mode
+flag</strong>, so a transfer can switch mid-stream and still decode.</p>
+
+<h3>7.4 &nbsp;Drop / reconnect / resume</h3>
+<ul>
+<li><code>/drop</code> closes the TCP socket but keeps all state in RAM.</li>
+<li><code>/reconnect</code> re-opens it, forces role LISTENER, sends <code>JOIN_REQUEST</code>, and
+re-requests missing blocks for every incomplete <em>inbound</em> transfer.</li>
+<li>The <strong>other</strong> side reacts to that <code>JOIN_REQUEST</code> (or to the station
+going ACTIVE again) by re-sending the blocks it still holds — even with no active ARQ loop, as a
+background task.</li>
+<li>Net effect: a station can vanish mid-transfer and, on return, the transfer <strong>finishes
+only the missing part</strong> — it never restarts.</li>
+</ul>
+
+<!-- ============================================================ -->
+<h2 id="sec8">8 &nbsp;Timing &amp; constant reference</h2>
+<table>
+<tr><th>Constant</th><th>Value</th><th>Where</th></tr>
+<tr><td class="kv">BEACON_INTERVAL</td><td>8 s</td><td>master beacon cadence</td></tr>
+<tr><td class="kv">BEACON_TIMEOUT</td><td>24 s (3 × interval)</td><td>silence before a successor takes over</td></tr>
+<tr><td class="kv">LOST_TIMEOUT</td><td>30 s</td><td>roster: ACTIVE → LOST</td></tr>
+<tr><td class="kv">REMOVE_TIMEOUT</td><td>120 s</td><td>roster: drop entirely</td></tr>
+<tr><td class="kv">BLOCK_SIZE</td><td>220 bytes</td><td>bulk block payload</td></tr>
+<tr><td class="kv">CONTROL_WINDOW_EVERY / _PAUSE</td><td>3 blocks / 1.2 s</td><td>quiet control window</td></tr>
+<tr><td class="kv">…_EVERY_BUSY / _PAUSE_BUSY</td><td>1 block / 1.5 s</td><td>contended control window</td></tr>
+<tr><td class="kv">CONTROL_CONTENDED_FOR</td><td>6 s</td><td>how long “busy” persists after a peer control frame</td></tr>
+<tr><td class="kv">ADAPT_DOWNSHIFT_FRAC</td><td>0.15</td><td>QPSK→BPSK loss threshold</td></tr>
+<tr><td>ARQ rounds</td><td>6</td><td><code>send_bulk</code></td></tr>
+<tr><td>BULK_STATUS wait</td><td>6 s</td><td>per ARQ round</td></tr>
+<tr><td><code>send_frame</code> retries</td><td>40</td><td>LBT attempts before giving up</td></tr>
+<tr><td>back-off</td><td>0.2 s → ×1.7 → cap 3.0 s, + U(0.05, 0.30) jitter</td><td>per CHANNEL_BUSY</td></tr>
+<tr><td>TX reply timeout</td><td>8 s</td><td>wait for TX_GRANTED / CHANNEL_BUSY</td></tr>
+<tr><td>OFDM symbol</td><td>40 ms</td><td>320 samples @ 8 kHz</td></tr>
+<tr><td>Preamble + header</td><td>80 ms</td><td>fixed per transmission</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="sec9">9 &nbsp;Use cases &amp; scenarios</h2>
+
+<h3>UC-1 — First two stations: election + chat</h3>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant A as TA1ABC
+    participant CH as Channel
+    participant B as TA2DEF
+    A->>CH: connect + JOIN_REQUEST
+    B->>CH: connect + JOIN_REQUEST
+    Note over A,B: no BEACON heard for 24 s (BEACON_TIMEOUT)
+    A->>CH: BEACON {backup: TA2DEF, roster: [TA1ABC, TA2DEF]}
+    CH-->>B: BEACON
+    Note over A: role = MASTER
+    Note over B: role = BACKUP (beacon named me)
+    A->>CH: CHAT {dst: ALL, "net is open"}
+    CH-->>B: CHAT
+    B->>CH: CHAT {dst: ALL, "copy"}
+    B->>CH: CHAT {dst: TA1ABC, "private hi"}
+    CH-->>A: CHAT (directed)
+    Note over CH,B: not shown on B — addressed to TA1ABC only
+</div>
+<p>If both stations time out and beacon at once, the tie-break gives it to <code>TA1ABC</code>
+(smaller callsign); <code>TA2DEF</code> steps down and adopts BACKUP from the next beacon.</p>
+
+<h3>UC-2 — Group image while chatting</h3>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant A as TA1ABC (sender)
+    participant CH as Channel
+    participant C as TA3GHI
+    A->>CH: BULK_META {dst: ALL, 45 blocks}
+    loop every 3 blocks
+        A->>CH: BULK_BLOCK x3
+        Note over A,CH: pause 1.2 s (quiet window)
+    end
+    C->>CH: CHAT {dst: ALL, "nice shot!"}
+    CH-->>A: CHAT
+    Note over A,CH: peer CHAT seen → window goes BUSY (every block, 1.5 s)
+    A->>CH: BULK_BLOCK … (wider windows)
+    A->>CH: BULK_END
+    C->>CH: BULK_STATUS {missing: []}
+    Note over A,C: image complete, bit-exact — chat and beacons never starved
+</div>
+
+<h3>UC-3 — Private file under noise (ARQ + adaptive downshift)</h3>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant S as TA2DEF
+    participant R as TA3GHI
+    Note over S,R: channel ~12 dB SNR
+    S->>R: BULK_META {dst: TA3GHI, 20 blocks, QPSK}
+    S->>R: BULK_BLOCK x20  (QPSK)
+    S->>R: BULK_END
+    R->>S: BULK_STATUS {missing: [2,5,7,11,14,18]}
+    Note over S,R: 6/20 = 30% &gt; 15% → downshift QPSK → BPSK
+    S->>R: BULK_BLOCK x6  (BPSK — far more robust)
+    S->>R: BULK_END
+    R->>S: BULK_STATUS {missing: []}
+    Note over S,R: file saved on R, bit-exact
+</div>
+
+<h3>UC-4 — Master failure → backup → chained failover</h3>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant A as TA1AAA
+    participant B as TA2BBB
+    participant C as TA3CCC
+    A-->>B: BEACON (every 8 s)
+    A-->>C: BEACON
+    Note over A: TA1AAA drops off the air
+    Note over B,C: no BEACON for 24 s
+    B->>C: BEACON
+    Note over B: B is pos 0 → MASTER at +24 s (backup TA3CCC)
+    Note over B: TA2BBB also drops
+    Note over B,C: TA1AAA &amp; TA2BBB now LOST → C is pos 0
+    C->>C: BEACON
+    Note over B,C: TA3CCC = MASTER — failover chained twice
+</div>
+
+<h3>UC-5 — Station drops mid-transfer, resumes on return</h3>
+<div class="mermaid">
+sequenceDiagram
+    autonumber
+    participant S as Sender
+    participant R as Receiver
+    S->>R: BULK_META {30 blocks}
+    S->>R: BULK_BLOCK 0..17
+    Note over S,R: R /drop — TCP closed, state kept in RAM
+    S->>R: BULK_END
+    Note over S,R: no BULK_STATUS for 6 s x6 → transfer suspended (not lost)
+    Note over S,R: R /reconnect → JOIN_REQUEST
+    R->>S: BULK_STATUS {missing: [18..29]}
+    S->>R: BULK_BLOCK 18..29   (the tail only, not a restart)
+    S->>R: BULK_END
+    R->>S: BULK_STATUS {missing: []}
+</div>
+
+<!-- ============================================================ -->
+<h2 id="sec10">10 &nbsp;Known limitations &amp; roadmap</h2>
+<table>
+<tr><th>#</th><th>Limitation</th><th>Direction</th></tr>
+<tr><td>1</td><td><s>Failover chained through one backup only</s></td><td><strong>done</strong> — succession line (§5.3)</td></tr>
+<tr><td>2</td><td>Multipath only verified for a <em>mild</em> echo end to end; a strong echo drives sustained loss into a <code>BULK_END</code>-loss ARQ stall</td><td>needs FEC + estimator</td></tr>
+<tr><td>3</td><td>Full 4-station scenario verified in the Rust port; not yet with 4 real Python processes</td><td>—</td></tr>
+<tr><td>4</td><td>Adaptive modulation is ARQ-loss-driven only (no per-subcarrier SNR bit loading)</td><td>needs #5</td></tr>
+<tr><td>5</td><td>No channel estimation / equaliser</td><td>pilot-based estimation — next PHY step; unblocks real multipath</td></tr>
+<tr><td>6</td><td>No LDPC/RS FEC — integrity is CRC-32, correction is ARQ only</td><td>a real next step</td></tr>
+<tr><td>7</td><td>No sound-card I/O — audio still travels over TCP+base64</td><td><code>sounddevice</code> / <code>cpal</code></td></tr>
+<tr><td>8</td><td>No SDR / RF integration</td><td>expected to touch only the channel-access layer</td></tr>
+<tr><td>9</td><td>Control window is adaptive but its constants are fixed</td><td>could scale with pending traffic</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="sec11">11 &nbsp;Component map</h2>
+<table>
+<tr><th>File / crate</th><th>Role</th></tr>
+<tr><td><code>modem.py</code> / <code>rust/crates/modem</code></td><td>OFDM modulator + demodulator (§2). Bit-exact between the two.</td></tr>
+<tr><td><code>channel_server.py</code> / <code>rust/crates/channel</code></td><td>Channel physics + half-duplex arbitration + impairments (§3). No protocol logic.</td></tr>
+<tr><td><code>client.py</code> / <code>rust/crates/protocol</code></td><td>The station: LBT, election/failover, roster, chat, bulk/ARQ, drop/resume (§4–7).</td></tr>
+<tr><td><code>monitor.py</code> / GUI Monitor tab</td><td>Passive listener — decodes the channel, never transmits, never in the roster.</td></tr>
+<tr><td><code>netproto.py</code> / <code>rust/crates/netproto</code></td><td>Shared constants, CRC-32, line-JSON framing, frame definitions.</td></tr>
+<tr><td><code>rust/apps/atchat-gui</code></td><td>Cross-platform egui app: Channel / Stations / NET / Monitor tabs + scope, spectrum, waterfall.</td></tr>
+</table>
+
+<p style="margin-top:30px;color:var(--muted);font-size:8.5pt">ATCHAT Protocol Specification · v0.1.1 · generated from <code>PROTOCOL.md</code></p>
+
+</div>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+  mermaid.initialize({
+    startOnLoad:true, theme:'base', securityLevel:'loose',
+    themeVariables:{
+      fontFamily:'ui-monospace, Menlo, Consolas, monospace', fontSize:'12px',
+      primaryColor:'#e8f1fd', primaryBorderColor:'#1f6feb', primaryTextColor:'#1e293b',
+      lineColor:'#475569', actorBkg:'#eef2ff', actorBorder:'#6d28d9', actorTextColor:'#1e293b',
+      noteBkgColor:'#fbeedd', noteBorderColor:'#b45309', signalColor:'#334155', signalTextColor:'#1e293b'
+    },
+    sequence:{ diagramMarginX:8, diagramMarginY:8, boxMargin:8, mirrorActors:false, width:150 }
+  });
+</script>
+</body>
+</html>
