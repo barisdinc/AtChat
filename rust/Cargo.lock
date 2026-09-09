@@ -373,7 +373,7 @@ dependencies = [
 
 [[package]]
 name = "atchat-channeld"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "channel",
@@ -386,7 +386,7 @@ dependencies = [
 
 [[package]]
 name = "atchat-gui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "channel",
@@ -652,7 +652,7 @@ dependencies = [
 
 [[package]]
 name = "channel"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
@@ -968,7 +968,7 @@ checksum = "d8b14ccef22fc6f5a8f4d7d768562a182c04ce9a3b3157b91390b52ddfdf1a76"
 
 [[package]]
 name = "dsp-viz"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "num-complex",
  "rustfft",
@@ -2064,7 +2064,7 @@ dependencies = [
 
 [[package]]
 name = "modem"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "hound",
  "netproto",
@@ -2161,7 +2161,7 @@ dependencies = [
 
 [[package]]
 name = "netproto"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64",
  "crc32fast",
@@ -2783,7 +2783,7 @@ checksum = "3d595e54a326bc53c1c197b32d295e14b169e3cfeaa8dc82b529f947fba6bcf5"
 
 [[package]]
 name = "protocol"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "base64",
