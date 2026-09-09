@@ -69,7 +69,7 @@
 
         <Package Id='*'
             Keywords='Installer'
-            Description='AtCHAT egui arayüzleri: hepsi-bir-arada, kanal, client, monitör'
+            Description='AtCHAT egui interfaces: all-in-one, channel, client, monitor'
             Manufacturer='barisdinc'
             InstallerVersion='450'
             Languages='1033'
